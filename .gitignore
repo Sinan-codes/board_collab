@@ -105,3 +105,57 @@ venv.bak/
 .mypy_cache/
 
 .idea/*
+
+# Frontend .gitignore template
+# Dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# Production / Testing Builds
+/dist
+/build
+/out
+.tsc-out
+.tsbuildinfo
+
+# Environmental Variables and Secrets (NEVER commit these)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.log
+
+# Diagnostic and Coverage Reports
+.coverage
+/coverage
+*.lcov
+.clover
+junit.xml
+
+# Editor/IDE Configurations
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+Desktop.ini
