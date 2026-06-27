@@ -1,20 +1,21 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Stage, Layer, Line, Rect, Ellipse, Arrow as KonvaArrow, Text as KonvaText } from 'react-konva';
+import { useCollabWS, type WSUser } from '../hooks/useCollabWS';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Tool = 'select' | 'pan' | 'pen' | 'eraser' | 'rect' | 'ellipse' | 'line' | 'arrow' | 'text';
 
-interface BaseEl { id: string; color: string; strokeWidth: number }
-interface PenEl    extends BaseEl { type: 'pen' | 'eraser'; points: number[] }
-interface RectEl   extends BaseEl { type: 'rect'; x: number; y: number; w: number; h: number; fill: string }
+interface BaseEl { id: string; color: string; strokeWidth: number; userId?: string }
+interface PenEl     extends BaseEl { type: 'pen' | 'eraser'; points: number[] }
+interface RectEl    extends BaseEl { type: 'rect';    x: number; y: number; w: number; h: number; fill: string }
 interface EllipseEl extends BaseEl { type: 'ellipse'; cx: number; cy: number; rx: number; ry: number; fill: string }
-interface LineEl   extends BaseEl { type: 'line'; points: number[] }
-interface ArrowEl  extends BaseEl { type: 'arrow'; points: number[] }
-interface TextEl   extends BaseEl { type: 'text'; x: number; y: number; text: string; fontSize: number }
+interface LineEl    extends BaseEl { type: 'line';    points: number[] }
+interface ArrowEl   extends BaseEl { type: 'arrow';   points: number[] }
+interface TextEl    extends BaseEl { type: 'text';    x: number; y: number; text: string; fontSize: number }
 type DrawEl = PenEl | RectEl | EllipseEl | LineEl | ArrowEl | TextEl;
 
-interface ChatMsg { id: string; text: string; sender: string; time: string; isMe: boolean }
+interface ChatMsg { id: string; text: string; sender: string; time: string; isMe: boolean; system?: boolean }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -22,10 +23,26 @@ const PALETTE = ['#1a1a2e','#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#6
 const STROKE_WIDTHS = [1, 2, 4, 8];
 const genId = () => Math.random().toString(36).slice(2, 9);
 
+const ADJS  = ['Quick','Bold','Sharp','Swift','Bright','Cool','Wild','Calm','Keen','Brave'];
+const NOUNS = ['Pencil','Brush','Canvas','Sketch','Ink','Chalk','Paint','Pixel','Stroke','Draft'];
+function getUsername(): string {
+  const stored = sessionStorage.getItem('bc_username');
+  if (stored) return stored;
+  const name = ADJS[Math.floor(Math.random() * ADJS.length)] + NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  sessionStorage.setItem('bc_username', name);
+  return name;
+}
+
+function nowStr() {
+  const d = new Date();
+  return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+}
+
 // ─── SVG Icons ────────────────────────────────────────────────────────────────
 
 const Icon = ({ d, size = 18 }: { d: string; size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d={d} />
   </svg>
 );
@@ -63,49 +80,128 @@ const TOOLS: { id: Tool; icon: React.ReactNode; label: string; key: string }[] =
   { id: 'text',    icon: Icons.text,    label: 'Text',      key: 't' },
 ];
 
+// ─── Element renderer (shared for local + remote) ─────────────────────────────
+
+function renderEl(el: DrawEl) {
+  switch (el.type) {
+    case 'pen':
+      return <Line key={el.id} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth}
+               tension={0.5} lineCap="round" lineJoin="round" globalCompositeOperation="source-over" />;
+    case 'eraser':
+      return <Line key={el.id} points={el.points} stroke="#ffffff" strokeWidth={el.strokeWidth}
+               tension={0.5} lineCap="round" lineJoin="round" globalCompositeOperation="destination-out" />;
+    case 'rect':
+      return <Rect key={el.id}
+               x={el.w < 0 ? el.x + el.w : el.x} y={el.h < 0 ? el.y + el.h : el.y}
+               width={Math.abs(el.w)} height={Math.abs(el.h)}
+               stroke={el.color} strokeWidth={el.strokeWidth} fill={el.fill} />;
+    case 'ellipse':
+      return <Ellipse key={el.id} x={el.cx} y={el.cy} radiusX={el.rx || 1} radiusY={el.ry || 1}
+               stroke={el.color} strokeWidth={el.strokeWidth} fill={el.fill} />;
+    case 'line':
+      return <Line key={el.id} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth} lineCap="round" />;
+    case 'arrow':
+      return <KonvaArrow key={el.id} points={el.points} stroke={el.color} fill={el.color}
+               strokeWidth={el.strokeWidth} pointerLength={10} pointerWidth={8} />;
+    case 'text':
+      return <KonvaText key={el.id} x={el.x} y={el.y} text={el.text}
+               fontSize={el.fontSize} fill={el.color} fontFamily="Caveat, cursive" />;
+    default:
+      return null;
+  }
+}
+
 // ─── RoomPage ─────────────────────────────────────────────────────────────────
 
 interface RoomPageProps { roomId: string; onLeave: () => void }
 
 export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
-  // Drawing
-  const [tool, setTool]       = useState<Tool>('pen');
-  const [color, setColor]     = useState('#1a1a2e');
-  const [fill, setFill]       = useState('transparent');
-  const [sw, setSw]           = useState(2);
-  const [elements, setElements] = useState<DrawEl[]>([]);
-  const isDrawing = useRef(false);
-  const currentEl = useRef<DrawEl | null>(null);
-  const historyRef = useRef<DrawEl[][]>([[]]);
-  const stepRef    = useRef(0);
+  const username = useRef(getUsername()).current;
 
-  // Stage size
+  // ── Drawing state ──────────────────────────────────────────────────────────
+  const [tool, setTool]   = useState<Tool>('pen');
+  const [color, setColor] = useState('#1a1a2e');
+  const [fill, setFill]   = useState('transparent');
+  const [sw, setSw]       = useState(2);
+  const [elements, setElements] = useState<DrawEl[]>([]);
+
+  const isDrawing     = useRef(false);
+  const currentEl     = useRef<DrawEl | null>(null);
+  const myUserIdRef   = useRef<string>('');
+  const myUndoneEls   = useRef<DrawEl[]>([]); // per-user redo stack
+  const lastProgress  = useRef(0);            // throttle draw_progress
+
+  // ── Remote live previews (other users currently drawing) ───────────────────
+  const [remotePreviews, setRemotePreviews] = useState<Record<string, DrawEl>>({});
+
+  // ── Stage size ─────────────────────────────────────────────────────────────
   const containerRef = useRef<HTMLDivElement>(null);
   const [stageW, setStageW] = useState(800);
   const [stageH, setStageH] = useState(600);
 
-  // Text tool overlay
-  const [textPos, setTextPos]   = useState<{ x: number; y: number } | null>(null);
-  const [textVal, setTextVal]   = useState('');
+  // ── Text overlay ───────────────────────────────────────────────────────────
+  const [textPos, setTextPos] = useState<{ x: number; y: number } | null>(null);
+  const [textVal, setTextVal] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Chat
+  // ── Chat ───────────────────────────────────────────────────────────────────
   const [messages, setMessages] = useState<ChatMsg[]>([
-    { id: '0', text: 'Room created! Share the code to invite others.', sender: 'System', time: now(), isMe: false },
+    { id: '0', text: 'Room ready — share the code to invite others.', sender: 'System', time: nowStr(), isMe: false, system: true },
   ]);
   const [chatInput, setChatInput] = useState('');
   const [chatOpen, setChatOpen]   = useState(false);
   const messagesEnd = useRef<HTMLDivElement>(null);
 
-  // Copied feedback
+  // ── Online users ───────────────────────────────────────────────────────────
+  const [onlineUsers, setOnlineUsers] = useState<WSUser[]>([]);
+
+  // ── Misc UI ────────────────────────────────────────────────────────────────
   const [copied, setCopied] = useState(false);
 
-  function now() {
-    const d = new Date();
-    return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
-  }
+  // ─── WebSocket handlers ────────────────────────────────────────────────────
+  const { send, connected } = useCollabWS(roomId, username, {
+    onInit: (userId, els, users) => {
+      myUserIdRef.current = userId;
+      setElements(els);
+      setOnlineUsers(users);
+    },
+    onDraw: (el) => {
+      setElements(prev => [...prev, el]);
+      // Remove that user's in-progress preview
+      setRemotePreviews(prev => { const n = { ...prev }; delete n[el.userId ?? el.id]; return n; });
+    },
+    onDrawProgress: (el, senderId) => {
+      if (!el) return;
+      setRemotePreviews(prev => ({ ...prev, [senderId]: el }));
+    },
+    onSync: (els) => {
+      setElements(els);
+    },
+    onClear: () => {
+      setElements([]);
+      setRemotePreviews({});
+    },
+    onChat: ({ text, sender, time }) => {
+      setMessages(prev => [...prev, { id: genId(), text, sender, time, isMe: false }]);
+    },
+    onUserJoined: (userId, uname, users) => {
+      setOnlineUsers(users);
+      if (userId !== myUserIdRef.current) {
+        setMessages(prev => [...prev, {
+          id: genId(), text: `${uname} joined the room`, sender: 'System', time: nowStr(), isMe: false, system: true,
+        }]);
+      }
+    },
+    onUserLeft: (_userId, uname, users) => {
+      setOnlineUsers(users);
+      setMessages(prev => [...prev, {
+        id: genId(), text: `${uname} left the room`, sender: 'System', time: nowStr(), isMe: false, system: true,
+      }]);
+    },
+  });
 
-  // ── Resize observer ──────────────────────────────────────────────────────────
+  // ─── Side effects ──────────────────────────────────────────────────────────
+
   useEffect(() => {
     const update = () => {
       if (containerRef.current) {
@@ -119,13 +215,10 @@ export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
     return () => ro.disconnect();
   }, []);
 
-  // ── Chat scroll ──────────────────────────────────────────────────────────────
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
-
-  // ── Focus textarea ───────────────────────────────────────────────────────────
   useEffect(() => { if (textPos) textareaRef.current?.focus(); }, [textPos]);
 
-  // ── Keyboard shortcuts ───────────────────────────────────────────────────────
+  // Keyboard shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -138,24 +231,42 @@ export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  // ── History ──────────────────────────────────────────────────────────────────
-  const saveHistory = (els: DrawEl[]) => {
-    historyRef.current = historyRef.current.slice(0, stepRef.current + 1).concat([[...els]]);
-    stepRef.current = historyRef.current.length - 1;
-  };
-  const undo = () => {
-    if (stepRef.current === 0) return;
-    stepRef.current--;
-    setElements([...historyRef.current[stepRef.current]]);
-  };
-  const redo = () => {
-    if (stepRef.current >= historyRef.current.length - 1) return;
-    stepRef.current++;
-    setElements([...historyRef.current[stepRef.current]]);
-  };
-  const clearAll = () => { setElements([]); saveHistory([]); };
+  // ─── Undo / Redo (per-user: only undoes your own strokes) ─────────────────
 
-  // ── Drawing ──────────────────────────────────────────────────────────────────
+  const undo = useCallback(() => {
+    const myId = myUserIdRef.current;
+    setElements(prev => {
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (prev[i].userId === myId) {
+          myUndoneEls.current = [...myUndoneEls.current, prev[i]];
+          const next = [...prev.slice(0, i), ...prev.slice(i + 1)];
+          send({ type: 'sync', elements: next });
+          return next;
+        }
+      }
+      return prev;
+    });
+  }, [send]);
+
+  const redo = useCallback(() => {
+    if (myUndoneEls.current.length === 0) return;
+    const el = myUndoneEls.current[myUndoneEls.current.length - 1];
+    myUndoneEls.current = myUndoneEls.current.slice(0, -1);
+    setElements(prev => {
+      const next = [...prev, el];
+      send({ type: 'sync', elements: next });
+      return next;
+    });
+  }, [send]);
+
+  const clearAll = useCallback(() => {
+    setElements([]);
+    setRemotePreviews({});
+    send({ type: 'clear' });
+  }, [send]);
+
+  // ─── Drawing handlers ──────────────────────────────────────────────────────
+
   const getPos = (e: any) => e.target.getStage()?.getPointerPosition() ?? null;
 
   const handleDown = (e: any) => {
@@ -168,7 +279,15 @@ export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
     const pos = getPos(e);
     if (!pos) return;
     isDrawing.current = true;
-    const base = { id: genId(), color: tool === 'eraser' ? '#ffffff' : color, strokeWidth: tool === 'eraser' ? sw * 6 : sw };
+    myUndoneEls.current = []; // new stroke clears redo stack
+
+    const base: BaseEl = {
+      id: `${myUserIdRef.current}-${genId()}`,
+      color: tool === 'eraser' ? '#ffffff' : color,
+      strokeWidth: tool === 'eraser' ? sw * 6 : sw,
+      userId: myUserIdRef.current,
+    };
+
     let el: DrawEl;
     switch (tool) {
       case 'pen':     el = { ...base, type: 'pen',     points: [pos.x, pos.y] }; break;
@@ -189,6 +308,7 @@ export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
     if (!pos) return;
     const el = currentEl.current;
     let updated: DrawEl;
+
     switch (el.type) {
       case 'pen':
       case 'eraser':  updated = { ...el, points: [...el.points, pos.x, pos.y] }; break;
@@ -198,114 +318,150 @@ export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
       case 'arrow':   updated = { ...el, points: [el.points[0], el.points[1], pos.x, pos.y] }; break;
       default: return;
     }
+
     currentEl.current = updated;
     setElements(prev => [...prev.slice(0, -1), updated]);
+
+    // Throttled live preview broadcast (~20 fps)
+    const now = Date.now();
+    if (now - lastProgress.current > 50) {
+      lastProgress.current = now;
+      send({ type: 'draw_progress', element: updated });
+    }
   };
 
   const handleUp = () => {
     if (!isDrawing.current) return;
     isDrawing.current = false;
-    setElements(prev => { saveHistory(prev); return prev; });
+    const el = currentEl.current;
     currentEl.current = null;
+    if (el) send({ type: 'draw', element: el });
   };
 
   const commitText = () => {
     if (!textPos || !textVal.trim()) { setTextPos(null); setTextVal(''); return; }
     const el: TextEl = {
-      id: genId(), type: 'text',
+      id: `${myUserIdRef.current}-${genId()}`,
+      type: 'text',
       x: textPos.x, y: textPos.y,
       text: textVal,
       color, strokeWidth: sw, fontSize: 20,
+      userId: myUserIdRef.current,
     };
-    setElements(prev => { const n = [...prev, el]; saveHistory(n); return n; });
+    setElements(prev => [...prev, el]);
+    send({ type: 'draw', element: el });
     setTextPos(null); setTextVal('');
+    myUndoneEls.current = [];
   };
 
-  // ── Chat ─────────────────────────────────────────────────────────────────────
+  // ─── Chat ──────────────────────────────────────────────────────────────────
+
   const sendMsg = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
-    setMessages(prev => [...prev, { id: genId(), text: chatInput.trim(), sender: 'You', time: now(), isMe: true }]);
+    // Optimistic add for sender
+    setMessages(prev => [...prev, {
+      id: genId(), text: chatInput.trim(), sender: username, time: nowStr(), isMe: true,
+    }]);
+    send({ type: 'chat', text: chatInput.trim() });
     setChatInput('');
   };
 
-  // ── Copy room code ────────────────────────────────────────────────────────────
+  // ─── Copy room code ────────────────────────────────────────────────────────
+
   const copyCode = () => {
-    navigator.clipboard.writeText(roomId).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+    navigator.clipboard.writeText(roomId).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   };
 
-  // ── Cursor style ─────────────────────────────────────────────────────────────
-  const cursor = { select: 'default', pan: 'grab', pen: 'crosshair', eraser: 'cell', text: 'text', rect: 'crosshair', ellipse: 'crosshair', line: 'crosshair', arrow: 'crosshair' }[tool];
+  const cursor = ({
+    select: 'default', pan: 'grab', pen: 'crosshair', eraser: 'cell',
+    text: 'text', rect: 'crosshair', ellipse: 'crosshair', line: 'crosshair', arrow: 'crosshair',
+  } as Record<Tool, string>)[tool];
 
-  // ── Render canvas elements ────────────────────────────────────────────────────
-  const renderEls = () => elements.map(el => {
-    switch (el.type) {
-      case 'pen':    return <Line key={el.id} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth} tension={0.5} lineCap="round" lineJoin="round" globalCompositeOperation="source-over" />;
-      case 'eraser': return <Line key={el.id} points={el.points} stroke="#ffffff"  strokeWidth={el.strokeWidth} tension={0.5} lineCap="round" lineJoin="round" globalCompositeOperation="destination-out" />;
-      case 'rect':   return <Rect key={el.id} x={el.w < 0 ? el.x + el.w : el.x} y={el.h < 0 ? el.y + el.h : el.y} width={Math.abs(el.w)} height={Math.abs(el.h)} stroke={el.color} strokeWidth={el.strokeWidth} fill={el.fill} />;
-      case 'ellipse':return <Ellipse key={el.id} x={el.cx} y={el.cy} radiusX={el.rx} radiusY={el.ry} stroke={el.color} strokeWidth={el.strokeWidth} fill={el.fill} />;
-      case 'line':   return <Line key={el.id} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth} lineCap="round" />;
-      case 'arrow':  return <KonvaArrow key={el.id} points={el.points} stroke={el.color} fill={el.color} strokeWidth={el.strokeWidth} pointerLength={10} pointerWidth={8} />;
-      case 'text':   return <KonvaText key={el.id} x={el.x} y={el.y} text={el.text} fontSize={el.fontSize} fill={el.color} fontFamily="Caveat, cursive" />;
-      default: return null;
-    }
-  });
+  // ─── JSX ──────────────────────────────────────────────────────────────────
 
-  // ─── JSX ─────────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-white select-none" style={{ fontFamily: 'Inter, sans-serif' }}>
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-white select-none"
+      style={{ fontFamily: 'Inter, sans-serif' }}>
 
       {/* ── Top bar ── */}
       <header className="flex items-center gap-2 px-3 py-2 border-b border-gray-100 bg-white z-20 shrink-0">
-        {/* Back */}
+
+        {/* Leave */}
         <button onClick={onLeave}
           className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800 transition-colors px-2 py-1 rounded-lg hover:bg-gray-100">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
           <span className="hidden sm:inline">Leave</span>
         </button>
 
         {/* Room code */}
         <button onClick={copyCode}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 transition-all text-sm"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 transition-all"
           title="Copy room code">
           <span className="font-mono font-semibold tracking-widest text-indigo-600 text-xs">{roomId}</span>
-          {copied ? <span className="text-green-500">{Icons.check}</span> : <span className="text-gray-400">{Icons.copy}</span>}
+          {copied
+            ? <span className="text-green-500">{Icons.check}</span>
+            : <span className="text-gray-400">{Icons.copy}</span>}
         </button>
+
+        {/* Connection status */}
+        <div className="flex items-center gap-1.5" title={connected ? 'Connected' : 'Reconnecting…'}>
+          <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-amber-400 animate-pulse'}`} />
+          <span className="text-xs text-gray-400 hidden sm:block">{connected ? 'Live' : 'Connecting…'}</span>
+        </div>
 
         <div className="flex-1" />
 
-        {/* Undo / Redo */}
+        {/* Undo / Redo / Clear */}
         <button onClick={undo} title="Undo (Ctrl+Z)"
-          className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition-colors">{Icons.undo}</button>
+          className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition-colors">
+          {Icons.undo}
+        </button>
         <button onClick={redo} title="Redo (Ctrl+Y)"
-          className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition-colors">{Icons.redo}</button>
+          className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition-colors">
+          {Icons.redo}
+        </button>
         <button onClick={clearAll} title="Clear canvas"
-          className="p-2 rounded-lg text-gray-500 hover:bg-red-50 hover:text-red-500 transition-colors">{Icons.trash}</button>
+          className="p-2 rounded-lg text-gray-500 hover:bg-red-50 hover:text-red-500 transition-colors">
+          {Icons.trash}
+        </button>
 
         <div className="w-px h-5 bg-gray-200 mx-1" />
 
-        {/* Share button */}
+        {/* Share */}
         <button onClick={copyCode}
           className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors">
           {Icons.share}
           <span>Share</span>
         </button>
 
-        {/* Chat toggle (always visible) */}
+        {/* Chat toggle */}
         <button onClick={() => setChatOpen(o => !o)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border ${chatOpen ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+          className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border
+            ${chatOpen ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
           {Icons.chat}
           <span className="hidden sm:inline">Chat</span>
+          {onlineUsers.length > 0 && (
+            <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+              {onlineUsers.length}
+            </span>
+          )}
         </button>
       </header>
 
       {/* ── Toolbar ── */}
-      <div className="flex items-center gap-1 px-3 py-1.5 border-b border-gray-100 bg-white z-10 shrink-0 overflow-x-auto scrollbar-hide">
+      <div className="flex items-center gap-1 px-3 py-1.5 border-b border-gray-100 bg-white z-10 shrink-0 overflow-x-auto"
+        style={{ scrollbarWidth: 'none' }}>
 
-        {/* Tools */}
         {TOOLS.map(t => (
           <button key={t.id} onClick={() => setTool(t.id)} title={`${t.label} (${t.key})`}
-            className={`p-2 rounded-lg transition-all shrink-0 ${tool === t.id ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}>
+            className={`p-2 rounded-lg transition-all shrink-0 ${tool === t.id
+              ? 'bg-indigo-100 text-indigo-700 shadow-sm'
+              : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}>
             {t.icon}
           </button>
         ))}
@@ -314,40 +470,43 @@ export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
 
         {/* Color palette */}
         {PALETTE.map(c => (
-          <button key={c} onClick={() => setColor(c)} title={c}
+          <button key={c} onClick={() => setColor(c)}
             className="shrink-0 w-6 h-6 rounded-full border-2 transition-transform hover:scale-110"
-            style={{ backgroundColor: c, borderColor: color === c ? '#6965db' : 'transparent', outline: color === c ? '2px solid #6965db' : 'none', outlineOffset: '1px' }} />
+            style={{
+              backgroundColor: c,
+              borderColor: color === c ? '#6965db' : 'transparent',
+              outline: color === c ? '2px solid #6965db' : 'none',
+              outlineOffset: '1px',
+            }} />
         ))}
-        {/* Custom color */}
-        <label title="Custom color" className="shrink-0 w-6 h-6 rounded-full border-2 border-dashed border-gray-300 hover:border-indigo-400 cursor-pointer flex items-center justify-center overflow-hidden">
-          <input type="color" value={color} onChange={e => setColor(e.target.value)} className="opacity-0 absolute w-0 h-0" />
-          <span className="text-gray-400 text-xs">+</span>
+        {/* Custom color picker */}
+        <label title="Custom color"
+          className="shrink-0 w-6 h-6 rounded-full border-2 border-dashed border-gray-300 hover:border-indigo-400 cursor-pointer flex items-center justify-center relative overflow-hidden">
+          <input type="color" value={color} onChange={e => setColor(e.target.value)}
+            className="opacity-0 absolute inset-0 w-full h-full cursor-pointer" />
+          <span className="text-gray-400 text-xs pointer-events-none">+</span>
         </label>
 
         <div className="w-px h-6 bg-gray-200 mx-1.5 shrink-0" />
 
-        {/* Fill */}
-        <div className="flex items-center gap-1 shrink-0">
-          <span className="text-xs text-gray-400 hidden sm:block">Fill:</span>
-          <button onClick={() => setFill(fill === 'transparent' ? color : 'transparent')}
-            className="w-6 h-6 rounded border-2 border-gray-300 hover:border-indigo-400 transition-colors shrink-0"
-            title="Toggle fill"
-            style={{ backgroundColor: fill === 'transparent' ? 'transparent' : fill }}>
-            {fill === 'transparent' && <span className="text-gray-300 text-xs leading-none">∅</span>}
-          </button>
-        </div>
+        {/* Fill toggle */}
+        <button onClick={() => setFill(fill === 'transparent' ? color : 'transparent')}
+          title="Toggle fill"
+          className="shrink-0 w-6 h-6 rounded border-2 border-gray-300 hover:border-indigo-400 transition-colors flex items-center justify-center"
+          style={{ backgroundColor: fill === 'transparent' ? 'white' : fill }}>
+          {fill === 'transparent' && <span className="text-gray-300 text-[10px] leading-none">∅</span>}
+        </button>
 
         <div className="w-px h-6 bg-gray-200 mx-1.5 shrink-0" />
 
-        {/* Stroke width */}
-        <div className="flex items-center gap-1 shrink-0">
-          {STROKE_WIDTHS.map(w => (
-            <button key={w} onClick={() => setSw(w)} title={`Stroke ${w}px`}
-              className={`shrink-0 flex items-center justify-center w-8 h-7 rounded-lg transition-all ${sw === w ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'}`}>
-              <div className="bg-current rounded-full" style={{ width: Math.min(w * 3.5, 22), height: w }} />
-            </button>
-          ))}
-        </div>
+        {/* Stroke widths */}
+        {STROKE_WIDTHS.map(w => (
+          <button key={w} onClick={() => setSw(w)} title={`Stroke ${w}px`}
+            className={`shrink-0 flex items-center justify-center w-8 h-7 rounded-lg transition-all ${
+              sw === w ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'}`}>
+            <div className="bg-current rounded-full" style={{ width: Math.min(w * 3.5, 22), height: w }} />
+          </button>
+        ))}
       </div>
 
       {/* ── Main area ── */}
@@ -360,7 +519,12 @@ export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
             onMouseDown={handleDown} onMousemove={handleMove} onMouseup={handleUp}
             onTouchStart={handleDown} onTouchMove={handleMove} onTouchEnd={handleUp}
           >
-            <Layer>{renderEls()}</Layer>
+            {/* Completed elements */}
+            <Layer>{elements.map(renderEl)}</Layer>
+            {/* Remote live previews (semi-transparent) */}
+            <Layer opacity={0.6}>
+              {Object.values(remotePreviews).map(el => renderEl({ ...el, id: `preview-${el.id}` } as DrawEl))}
+            </Layer>
           </Stage>
 
           {/* Text input overlay */}
@@ -370,22 +534,25 @@ export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
               value={textVal}
               onChange={e => setTextVal(e.target.value)}
               onBlur={commitText}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitText(); } if (e.key === 'Escape') { setTextPos(null); setTextVal(''); } }}
-              className="absolute border-0 outline-none bg-transparent resize-none p-0 m-0 leading-normal"
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitText(); }
+                if (e.key === 'Escape') { setTextPos(null); setTextVal(''); }
+              }}
+              rows={1}
+              placeholder="Type here…"
+              className="absolute resize-none border-0 outline-none bg-transparent p-0 m-0 leading-normal"
               style={{
                 left: textPos.x, top: textPos.y,
                 fontFamily: 'Caveat, cursive', fontSize: 20,
                 color, minWidth: 120, minHeight: 28,
                 caretColor: color,
-                boxShadow: `0 0 0 2px ${color}33`,
+                boxShadow: `0 0 0 2px ${color}44`,
                 borderRadius: 2,
               }}
-              placeholder="Type here..."
-              rows={1}
             />
           )}
 
-          {/* Hint */}
+          {/* Canvas hint */}
           {elements.length === 0 && !textPos && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <p style={{ fontFamily: 'Caveat, cursive', fontSize: '1.3rem', color: '#9ca3af' }}>
@@ -397,68 +564,87 @@ export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
 
         {/* ── Chat sidebar ── */}
         <div className={`
-          flex flex-col bg-white border-l border-gray-100 z-30
-          transition-all duration-300 ease-in-out shrink-0
+          flex flex-col bg-white z-30 shrink-0 transition-all duration-300 ease-in-out
           ${chatOpen
-            ? 'w-full sm:w-80 absolute inset-0 sm:relative sm:inset-auto'
+            ? 'w-full sm:w-80 absolute inset-0 sm:relative sm:inset-auto border-l border-gray-100'
             : 'w-0 overflow-hidden'}
         `}>
-          {chatOpen && (
-            <>
-              {/* Chat header */}
-              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 shrink-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-gray-800" style={{ fontFamily: 'Caveat, cursive', fontSize: '1.2rem' }}>Chat</span>
-                  <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-medium">1 online</span>
-                </div>
-                <button onClick={() => setChatOpen(false)}
-                  className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
-                  {Icons.close}
-                </button>
+          {chatOpen && <>
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-gray-800"
+                  style={{ fontFamily: 'Caveat, cursive', fontSize: '1.2rem' }}>Chat</span>
+                <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-medium">
+                  {onlineUsers.length} online
+                </span>
               </div>
+              <button onClick={() => setChatOpen(false)}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
+                {Icons.close}
+              </button>
+            </div>
 
-              {/* Messages */}
-              <div className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3">
-                {messages.map(msg => (
-                  <div key={msg.id} className={`flex flex-col ${msg.isMe ? 'items-end' : 'items-start'}`}>
-                    {!msg.isMe && (
-                      <span className="text-xs text-gray-400 mb-1 px-1" style={{ fontFamily: 'Caveat, cursive' }}>
-                        {msg.sender}
-                      </span>
-                    )}
-                    <div className={`max-w-[85%] px-3 py-2 rounded-2xl text-sm leading-relaxed ${
-                      msg.isMe
-                        ? 'bg-indigo-600 text-white rounded-br-sm'
-                        : msg.sender === 'System'
-                          ? 'bg-gray-100 text-gray-500 italic text-xs rounded-bl-sm'
-                          : 'bg-gray-100 text-gray-800 rounded-bl-sm'
-                    }`}>
-                      {msg.text}
-                    </div>
-                    <span className="text-xs text-gray-300 mt-1 px-1">{msg.time}</span>
-                  </div>
+            {/* Online users list */}
+            {onlineUsers.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 px-4 py-2 border-b border-gray-50">
+                {onlineUsers.map(u => (
+                  <span key={u.id}
+                    className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      u.id === myUserIdRef.current
+                        ? 'bg-indigo-100 text-indigo-700'
+                        : 'bg-gray-100 text-gray-600'
+                    }`}
+                    style={{ fontFamily: 'Caveat, cursive' }}>
+                    {u.id === myUserIdRef.current ? `${u.username} (you)` : u.username}
+                  </span>
                 ))}
-                <div ref={messagesEnd} />
               </div>
+            )}
 
-              {/* Chat input */}
-              <form onSubmit={sendMsg} className="flex items-center gap-2 px-3 py-3 border-t border-gray-100 shrink-0">
-                <input
-                  type="text"
-                  value={chatInput}
-                  onChange={e => setChatInput(e.target.value)}
-                  placeholder="Send a message…"
-                  className="flex-1 px-3 py-2 text-sm rounded-xl border border-gray-200 outline-none focus:border-indigo-400 transition-colors bg-gray-50"
-                  style={{ fontFamily: 'Inter, sans-serif' }}
-                />
-                <button type="submit"
-                  className="p-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition-colors shrink-0 disabled:opacity-40"
-                  disabled={!chatInput.trim()}>
-                  {Icons.send}
-                </button>
-              </form>
-            </>
-          )}
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3">
+              {messages.map(msg => (
+                <div key={msg.id} className={`flex flex-col ${msg.isMe ? 'items-end' : 'items-start'}`}>
+                  {!msg.isMe && !msg.system && (
+                    <span className="text-xs text-gray-400 mb-1 px-1" style={{ fontFamily: 'Caveat, cursive' }}>
+                      {msg.sender}
+                    </span>
+                  )}
+                  <div className={`max-w-[85%] px-3 py-2 rounded-2xl text-sm leading-relaxed ${
+                    msg.system
+                      ? 'bg-transparent text-gray-400 italic text-xs text-center w-full px-0'
+                      : msg.isMe
+                        ? 'bg-indigo-600 text-white rounded-br-sm'
+                        : 'bg-gray-100 text-gray-800 rounded-bl-sm'
+                  }`}>
+                    {msg.text}
+                  </div>
+                  {!msg.system && (
+                    <span className="text-xs text-gray-300 mt-1 px-1">{msg.time}</span>
+                  )}
+                </div>
+              ))}
+              <div ref={messagesEnd} />
+            </div>
+
+            {/* Input */}
+            <form onSubmit={sendMsg}
+              className="flex items-center gap-2 px-3 py-3 border-t border-gray-100 shrink-0">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                placeholder="Send a message…"
+                className="flex-1 px-3 py-2 text-sm rounded-xl border border-gray-200 outline-none focus:border-indigo-400 transition-colors bg-gray-50"
+                style={{ fontFamily: 'Inter, sans-serif' }}
+              />
+              <button type="submit" disabled={!chatInput.trim()}
+                className="p-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-xl transition-colors shrink-0">
+                {Icons.send}
+              </button>
+            </form>
+          </>}
         </div>
       </div>
     </div>
