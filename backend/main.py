@@ -61,9 +61,20 @@ async def ws_endpoint(ws: WebSocket, room_id: str):
     await ws.accept()
 
     username = ws.query_params.get("username", f"Artist{uuid.uuid4().hex[:4].upper()}")
-    user_id = uuid.uuid4().hex[:8]
+    # Use stable client_id from the browser (sessionStorage) so reconnects replace
+    # the old connection rather than adding a duplicate entry.
+    user_id = ws.query_params.get("client_id") or uuid.uuid4().hex[:8]
 
     room = get_or_create_room(room_id)
+
+    # If this client_id already has a slot (e.g. StrictMode double-mount / reconnect),
+    # close the old WebSocket silently before taking the slot.
+    if user_id in room.connections:
+        try:
+            await room.connections[user_id]["ws"].close()
+        except Exception:
+            pass
+
     room.connections[user_id] = {"ws": ws, "username": username}
 
     # Send current canvas state + user list to the new joiner
@@ -140,13 +151,16 @@ async def ws_endpoint(ws: WebSocket, room_id: str):
     except WebSocketDisconnect:
         pass
     finally:
-        room.connections.pop(user_id, None)
-        if not room.connections:
-            rooms.pop(room_id, None)
-        else:
-            await broadcast(room, {
-                "type": "user_left",
-                "userId": user_id,
-                "username": username,
-                "users": user_list(room),
-            })
+        # Only clean up if this WS is still the active connection for this user_id.
+        # A reconnect may have already replaced it — in that case, do nothing.
+        if room.connections.get(user_id, {}).get("ws") is ws:
+            room.connections.pop(user_id, None)
+            if not room.connections:
+                rooms.pop(room_id, None)
+            else:
+                await broadcast(room, {
+                    "type": "user_left",
+                    "userId": user_id,
+                    "username": username,
+                    "users": user_list(room),
+                })

@@ -2,6 +2,14 @@ import { useRef, useEffect, useCallback, useState } from 'react';
 
 const WS_BASE = (import.meta.env.VITE_WS_URL as string | undefined) ?? 'ws://localhost:8000';
 
+function getOrCreateClientId(): string {
+  const stored = sessionStorage.getItem('bc_client_id');
+  if (stored) return stored;
+  const id = Math.random().toString(36).slice(2, 11);
+  sessionStorage.setItem('bc_client_id', id);
+  return id;
+}
+
 export interface WSUser { id: string; username: string }
 
 export interface WSHandlers {
@@ -27,7 +35,8 @@ export function useCollabWS(roomId: string, username: string, handlers: WSHandle
 
   const connect = useCallback(() => {    // eslint-disable-line react-hooks/exhaustive-deps
     if (deadRef.current) return;
-    const url = `${WS_BASE}/ws/${encodeURIComponent(roomId)}?username=${encodeURIComponent(username)}`;
+    const clientId = getOrCreateClientId();
+    const url = `${WS_BASE}/ws/${encodeURIComponent(roomId)}?username=${encodeURIComponent(username)}&client_id=${encodeURIComponent(clientId)}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
@@ -63,7 +72,15 @@ export function useCollabWS(roomId: string, username: string, handlers: WSHandle
     return () => {
       deadRef.current = true;
       clearTimeout(reconnRef.current);
-      wsRef.current?.close();
+      const ws = wsRef.current;
+      if (ws) {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.close();
+        wsRef.current = null;
+      }
     };
   }, [connect]);
 
