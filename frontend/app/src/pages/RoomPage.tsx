@@ -23,16 +23,6 @@ const PALETTE = ['#1a1a2e','#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#6
 const STROKE_WIDTHS = [1, 2, 4, 8];
 const genId = () => Math.random().toString(36).slice(2, 9);
 
-const ADJS  = ['Quick','Bold','Sharp','Swift','Bright','Cool','Wild','Calm','Keen','Brave'];
-const NOUNS = ['Pencil','Brush','Canvas','Sketch','Ink','Chalk','Paint','Pixel','Stroke','Draft'];
-function getUsername(): string {
-  const stored = sessionStorage.getItem('bc_username');
-  if (stored) return stored;
-  const name = ADJS[Math.floor(Math.random() * ADJS.length)] + NOUNS[Math.floor(Math.random() * NOUNS.length)];
-  sessionStorage.setItem('bc_username', name);
-  return name;
-}
-
 function nowStr() {
   const d = new Date();
   return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
@@ -113,10 +103,9 @@ function renderEl(el: DrawEl) {
 
 // ─── RoomPage ─────────────────────────────────────────────────────────────────
 
-interface RoomPageProps { roomId: string; onLeave: () => void }
+interface RoomPageProps { roomId: string; username: string; onLeave: () => void }
 
-export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
-  const username = useRef(getUsername()).current;
+export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
   // ── Drawing state ──────────────────────────────────────────────────────────
   const [tool, setTool]   = useState<Tool>('pen');
@@ -590,12 +579,12 @@ export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
               <div className="flex flex-wrap gap-1.5 px-4 py-2 border-b border-gray-50">
                 {onlineUsers.map(u => (
                   <span key={u.id}
-                    className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                    className={`text-sm px-2.5 py-0.5 rounded-full font-medium ${
                       u.id === myUserIdRef.current
                         ? 'bg-indigo-100 text-indigo-700'
-                        : 'bg-gray-100 text-gray-600'
+                        : 'bg-gray-100 text-gray-700'
                     }`}
-                    style={{ fontFamily: 'Caveat, cursive' }}>
+                    style={{ fontFamily: 'Inter, sans-serif' }}>
                     {u.id === myUserIdRef.current ? `${u.username} (you)` : u.username}
                   </span>
                 ))}
@@ -607,7 +596,7 @@ export default function RoomPage({ roomId, onLeave }: RoomPageProps) {
               {messages.map(msg => (
                 <div key={msg.id} className={`flex flex-col ${msg.isMe ? 'items-end' : 'items-start'}`}>
                   {!msg.isMe && !msg.system && (
-                    <span className="text-xs text-gray-400 mb-1 px-1" style={{ fontFamily: 'Caveat, cursive' }}>
+                    <span className="text-xs font-semibold text-gray-600 mb-1 px-1" style={{ fontFamily: 'Inter, sans-serif' }}>
                       {msg.sender}
                     </span>
                   )}

@@ -1,8 +1,19 @@
 import { useState } from 'react';
 
 interface HomePageProps {
-  onCreateRoom: (roomId: string) => void;
-  onJoinRoom: (roomId: string) => void;
+  onCreateRoom: (roomId: string, username: string) => void;
+  onJoinRoom:   (roomId: string, username: string) => void;
+}
+
+const ADJS  = ['Quick','Bold','Sharp','Swift','Bright','Cool','Wild','Calm','Keen','Brave'];
+const NOUNS = ['Pencil','Brush','Canvas','Sketch','Ink','Chalk','Paint','Pixel','Stroke','Draft'];
+
+function randomName(): string {
+  return ADJS[Math.floor(Math.random() * ADJS.length)] + NOUNS[Math.floor(Math.random() * NOUNS.length)];
+}
+
+function getStoredName(): string {
+  return sessionStorage.getItem('bc_username') || randomName();
 }
 
 function generateRoomId(): string {
@@ -11,26 +22,33 @@ function generateRoomId(): string {
 }
 
 export default function HomePage({ onCreateRoom, onJoinRoom }: HomePageProps) {
+  const [username, setUsername] = useState(getStoredName);
   const [joinCode, setJoinCode] = useState('');
   const [joinError, setJoinError] = useState('');
+  const [nameError, setNameError] = useState('');
+
+  function resolvedName(): string | null {
+    const name = username.trim();
+    if (!name) { setNameError('Please enter a display name.'); return null; }
+    sessionStorage.setItem('bc_username', name);
+    return name;
+  }
+
   function handleCreate() {
-    const id = generateRoomId();
-    onCreateRoom(id);
+    const name = resolvedName();
+    if (!name) return;
+    onCreateRoom(generateRoomId(), name);
   }
 
   function handleJoin(e: React.FormEvent) {
     e.preventDefault();
+    const name = resolvedName();
+    if (!name) return;
     const code = joinCode.trim().toUpperCase();
-    if (!code) {
-      setJoinError('Please enter a room code.');
-      return;
-    }
-    if (code.length < 4) {
-      setJoinError('Room code is too short.');
-      return;
-    }
+    if (!code) { setJoinError('Please enter a room code.'); return; }
+    if (code.length < 4) { setJoinError('Room code is too short.'); return; }
     setJoinError('');
-    onJoinRoom(code);
+    onJoinRoom(code, name);
   }
 
   return (
@@ -86,6 +104,80 @@ export default function HomePage({ onCreateRoom, onJoinRoom }: HomePageProps) {
 
         {/* Card */}
         <div className="w-full bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
+
+          {/* ── Display name ── */}
+          <div className="px-6 sm:px-8 pt-6 sm:pt-8 pb-5">
+            <p
+              className="text-sm font-medium text-gray-400 uppercase tracking-widest mb-3"
+              style={{ fontFamily: 'Inter, sans-serif', letterSpacing: '0.12em' }}
+            >
+              Your display name
+            </p>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                {/* user icon */}
+                <svg
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300 pointer-events-none"
+                  width="18" height="18" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                >
+                  <circle cx="12" cy="8" r="4" />
+                  <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
+                </svg>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={e => { setUsername(e.target.value); setNameError(''); }}
+                  placeholder="Your name"
+                  maxLength={24}
+                  className="w-full pl-10 pr-4 py-3 rounded-xl border text-base outline-none transition-all duration-150 placeholder:text-gray-300"
+                  style={{
+                    fontFamily: 'Inter, sans-serif',
+                    fontSize: '1rem',
+                    borderColor: nameError ? '#f87171' : '#e5e7eb',
+                    boxShadow: nameError ? '0 0 0 3px rgba(248,113,113,0.15)' : 'none',
+                    color: '#1a1a2e',
+                  }}
+                  onFocus={e => {
+                    if (!nameError) {
+                      e.currentTarget.style.borderColor = '#6965db';
+                      e.currentTarget.style.boxShadow = '0 0 0 3px rgba(105,101,219,0.15)';
+                    }
+                  }}
+                  onBlur={e => {
+                    if (!nameError) {
+                      e.currentTarget.style.borderColor = '#e5e7eb';
+                      e.currentTarget.style.boxShadow = 'none';
+                    }
+                  }}
+                />
+              </div>
+              {/* Randomise button */}
+              <button
+                type="button"
+                onClick={() => { setUsername(randomName()); setNameError(''); }}
+                title="Random name"
+                className="shrink-0 px-3 py-3 rounded-xl border border-gray-200 text-gray-400 hover:text-indigo-600 hover:border-indigo-300 hover:bg-indigo-50 transition-all duration-150"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 1l4 4-4 4" />
+                  <path d="M3 11V9a4 4 0 014-4h14" />
+                  <path d="M7 23l-4-4 4-4" />
+                  <path d="M21 13v2a4 4 0 01-4 4H3" />
+                </svg>
+              </button>
+            </div>
+            {nameError && (
+              <p className="mt-1.5 text-sm text-red-400" style={{ fontFamily: 'Caveat, cursive', fontSize: '1rem' }}>
+                {nameError}
+              </p>
+            )}
+          </div>
+
+          {/* Thin divider */}
+          <div className="h-px bg-gray-100 mx-6 sm:mx-8" />
+
           {/* Create Room */}
           <div className="p-6 sm:p-8">
             <p
@@ -177,12 +269,8 @@ export default function HomePage({ onCreateRoom, onJoinRoom }: HomePageProps) {
                   borderColor: '#6965db',
                   background: 'transparent',
                 }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = '#ededfb';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'transparent';
-                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#ededfb'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
               >
                 Join Room →
               </button>
