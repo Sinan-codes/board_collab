@@ -194,17 +194,23 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   const [selFinalized, setSelFinalized] = useState(false);
 
   // ── Refs ───────────────────────────────────────────────────────────────────
-  const isDrawing        = useRef(false);
-  const isSelecting      = useRef(false);
+  const isDrawing         = useRef(false);
+  const isSelecting       = useRef(false);
   const isMovingSelection = useRef(false);
-  const selMovePrevPos   = useRef<{ x: number; y: number } | null>(null);
-  const selBoxStart      = useRef<{ x: number; y: number } | null>(null);
-  const selBoxRef        = useRef<SelBox | null>(null);
-  const currentEl        = useRef<DrawEl | null>(null);
-  const myUserIdRef      = useRef<string>('');
-  const myUndoneEls      = useRef<DrawEl[]>([]);
-  const lastProgress     = useRef(0);
-  const stageRef         = useRef<any>(null);
+  const selMovePrevPos    = useRef<{ x: number; y: number } | null>(null);
+  const selMoveBeforeEls  = useRef<DrawEl[] | null>(null);
+  const selBoxStart       = useRef<{ x: number; y: number } | null>(null);
+  const selBoxRef         = useRef<SelBox | null>(null);
+  const currentEl         = useRef<DrawEl | null>(null);
+  const myUserIdRef       = useRef<string>('');
+  const lastProgress      = useRef(0);
+  const stageRef          = useRef<any>(null);
+
+  type UndoEntry =
+    | { kind: 'add';  el: DrawEl }
+    | { kind: 'move'; before: DrawEl[]; after: DrawEl[] };
+  const undoStack = useRef<UndoEntry[]>([]);
+  const redoStack = useRef<UndoEntry[]>([]);
 
   // ── Remote live previews ───────────────────────────────────────────────────
   const [remotePreviews, setRemotePreviews] = useState<Record<string, DrawEl>>({});
@@ -311,29 +317,43 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   // ─── Undo / Redo ──────────────────────────────────────────────────────────
 
   const undo = useCallback(() => {
-    const myId = myUserIdRef.current;
-    setElements(prev => {
-      for (let i = prev.length - 1; i >= 0; i--) {
-        if (prev[i].userId === myId) {
-          myUndoneEls.current = [...myUndoneEls.current, prev[i]];
-          const next = [...prev.slice(0, i), ...prev.slice(i + 1)];
-          send({ type: 'sync', elements: next });
-          return next;
-        }
-      }
-      return prev;
-    });
+    const entry = undoStack.current.pop();
+    if (!entry) return;
+    if (entry.kind === 'add') {
+      setElements(prev => {
+        const next = prev.filter(el => el.id !== entry.el.id);
+        send({ type: 'sync', elements: next });
+        return next;
+      });
+    } else {
+      const beforeMap = new Map(entry.before.map(e => [e.id, e]));
+      setElements(prev => {
+        const next = prev.map(el => beforeMap.get(el.id) ?? el);
+        send({ type: 'sync', elements: next });
+        return next;
+      });
+    }
+    redoStack.current.push(entry);
   }, [send]);
 
   const redo = useCallback(() => {
-    if (myUndoneEls.current.length === 0) return;
-    const el = myUndoneEls.current[myUndoneEls.current.length - 1];
-    myUndoneEls.current = myUndoneEls.current.slice(0, -1);
-    setElements(prev => {
-      const next = [...prev, el];
-      send({ type: 'sync', elements: next });
-      return next;
-    });
+    const entry = redoStack.current.pop();
+    if (!entry) return;
+    if (entry.kind === 'add') {
+      setElements(prev => {
+        const next = [...prev, entry.el];
+        send({ type: 'sync', elements: next });
+        return next;
+      });
+    } else {
+      const afterMap = new Map(entry.after.map(e => [e.id, e]));
+      setElements(prev => {
+        const next = prev.map(el => afterMap.get(el.id) ?? el);
+        send({ type: 'sync', elements: next });
+        return next;
+      });
+    }
+    undoStack.current.push(entry);
   }, [send]);
 
   const clearAll = useCallback(() => {
@@ -386,6 +406,8 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
         if (inside) {
           isMovingSelection.current = true;
           selMovePrevPos.current = pos;
+          // Snapshot pre-move positions for undo
+          selMoveBeforeEls.current = elements.filter(el => selectedIds.has(el.id));
           return;
         }
       }
@@ -422,7 +444,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     const pos = getPos();
     if (!pos) return;
     isDrawing.current = true;
-    myUndoneEls.current = [];
+    redoStack.current = []; // new stroke clears redo history
 
     const base: BaseEl = {
       id: `${myUserIdRef.current}-${genId()}`,
@@ -507,7 +529,17 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     if (isMovingSelection.current) {
       isMovingSelection.current = false;
       selMovePrevPos.current = null;
-      setElements(prev => { send({ type: 'sync', elements: prev }); return prev; });
+      setElements(prev => {
+        send({ type: 'sync', elements: prev });
+        if (selMoveBeforeEls.current) {
+          const ids = new Set(selMoveBeforeEls.current.map(e => e.id));
+          const after = prev.filter(e => ids.has(e.id));
+          undoStack.current.push({ kind: 'move', before: selMoveBeforeEls.current, after });
+          redoStack.current = [];
+          selMoveBeforeEls.current = null;
+        }
+        return prev;
+      });
       return;
     }
 
@@ -544,7 +576,10 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     isDrawing.current = false;
     const el = currentEl.current;
     currentEl.current = null;
-    if (el) send({ type: 'draw', element: el });
+    if (el) {
+      send({ type: 'draw', element: el });
+      undoStack.current.push({ kind: 'add', el });
+    }
   };
 
   const commitText = () => {
@@ -561,9 +596,10 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     };
     setElements(prev => [...prev, el]);
     send({ type: 'draw', element: el });
+    undoStack.current.push({ kind: 'add', el });
+    redoStack.current = [];
     setTextPos(null);
     setTextVal('');
-    myUndoneEls.current = [];
   };
 
   // ─── Chat ──────────────────────────────────────────────────────────────────
