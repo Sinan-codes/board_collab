@@ -14,6 +14,12 @@
 
 body {
   margin: 0;
+  overflow: hidden;
   font-family: 'Inter', sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Konva renders a <canvas> which is inline by default — block removes the bottom gap */
+canvas {
+  display: block;
 }

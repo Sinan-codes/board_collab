@@ -4,7 +4,7 @@ import { useCollabWS, type WSUser } from '../hooks/useCollabWS';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Tool = 'select' | 'pan' | 'pen' | 'eraser' | 'rect' | 'ellipse' | 'line' | 'arrow' | 'text';
+type Tool = 'select' | 'pen' | 'eraser' | 'rect' | 'ellipse' | 'line' | 'arrow' | 'text';
 
 interface BaseEl { id: string; color: string; strokeWidth: number; userId?: string }
 interface PenEl     extends BaseEl { type: 'pen' | 'eraser'; points: number[] }
@@ -16,11 +16,13 @@ interface TextEl    extends BaseEl { type: 'text';    x: number; y: number; text
 type DrawEl = PenEl | RectEl | EllipseEl | LineEl | ArrowEl | TextEl;
 
 interface ChatMsg { id: string; text: string; sender: string; time: string; isMe: boolean; system?: boolean }
+interface SelBox   { x: number; y: number; w: number; h: number }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PALETTE = ['#1a1a2e','#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#6965db','#a855f7','#ec4899'];
+const PALETTE      = ['#1a1a2e','#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#6965db','#a855f7','#ec4899'];
 const STROKE_WIDTHS = [1, 2, 4, 8];
+const ERASER_SIZES  = [10, 30, 80, 200];
 const genId = () => Math.random().toString(36).slice(2, 9);
 
 function nowStr() {
@@ -39,7 +41,6 @@ const Icon = ({ d, size = 18 }: { d: string; size?: number }) => (
 
 const Icons = {
   select:  <Icon d="M5 3l14 9-7 1-3 6L5 3z" />,
-  pan:     <Icon d="M18 11V6l-2-2H8L6 6v5H3l9 10 9-10h-3zM8 6h8v5H8V6z" />,
   pen:     <Icon d="M12 20h9M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" />,
   eraser:  <Icon d="M20 20H7L3 16l10-10 7 7-3.5 3.5M6.5 17.5l10-10" />,
   rect:    <Icon d="M3 3h18v18H3z" />,
@@ -47,8 +48,8 @@ const Icons = {
   line:    <Icon d="M5 19L19 5" />,
   arrow:   <Icon d="M5 12h14M13 5l7 7-7 7" />,
   text:    <Icon d="M4 6h16M4 12h10M4 18h6" />,
-  undo:    <Icon d="M3 7v6h6M3 13a9 9 0 103-6.7" />,
-  redo:    <Icon d="M21 7v6h-6M21 13a9 9 0 11-3-6.7" />,
+  undo:    <Icon d="M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3" />,
+  redo:    <Icon d="M15 14l5-5-5-5M19 9H9a6 6 0 000 12h3" />,
   trash:   <Icon d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />,
   share:   <Icon d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8M16 6l-4-4-4 4M12 2v13" />,
   chat:    <Icon d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />,
@@ -60,7 +61,6 @@ const Icons = {
 
 const TOOLS: { id: Tool; icon: React.ReactNode; label: string; key: string }[] = [
   { id: 'select',  icon: Icons.select,  label: 'Select',    key: 'v' },
-  { id: 'pan',     icon: Icons.pan,     label: 'Pan',       key: 'h' },
   { id: 'pen',     icon: Icons.pen,     label: 'Pen',       key: 'p' },
   { id: 'eraser',  icon: Icons.eraser,  label: 'Eraser',    key: 'e' },
   { id: 'rect',    icon: Icons.rect,    label: 'Rectangle', key: 'r' },
@@ -70,32 +70,104 @@ const TOOLS: { id: Tool; icon: React.ReactNode; label: string; key: string }[] =
   { id: 'text',    icon: Icons.text,    label: 'Text',      key: 't' },
 ];
 
-// ─── Element renderer (shared for local + remote) ─────────────────────────────
+// ─── Bounding-box helpers ─────────────────────────────────────────────────────
 
-function renderEl(el: DrawEl) {
+function getElBounds(el: DrawEl) {
+  switch (el.type) {
+    case 'pen':
+    case 'eraser': {
+      const xs = el.points.filter((_, i) => i % 2 === 0);
+      const ys = el.points.filter((_, i) => i % 2 !== 0);
+      return { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
+    }
+    case 'rect':
+      return { x1: Math.min(el.x, el.x+el.w), y1: Math.min(el.y, el.y+el.h), x2: Math.max(el.x, el.x+el.w), y2: Math.max(el.y, el.y+el.h) };
+    case 'ellipse':
+      return { x1: el.cx-el.rx, y1: el.cy-el.ry, x2: el.cx+el.rx, y2: el.cy+el.ry };
+    case 'line':
+    case 'arrow': {
+      const xs = el.points.filter((_, i) => i % 2 === 0);
+      const ys = el.points.filter((_, i) => i % 2 !== 0);
+      return { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
+    }
+    case 'text':
+      return { x1: el.x, y1: el.y, x2: el.x + 200, y2: el.y + el.fontSize * 1.5 };
+    default:
+      return null;
+  }
+}
+
+function elIntersectsBox(el: DrawEl, box: SelBox) {
+  const b = getElBounds(el);
+  if (!b) return false;
+  return b.x1 <= box.x+box.w && b.x2 >= box.x && b.y1 <= box.y+box.h && b.y2 >= box.y;
+}
+
+function applyOffset(el: DrawEl, dx: number, dy: number): DrawEl {
+  const off = (pts: number[]) => pts.map((v, i) => i % 2 === 0 ? v + dx : v + dy);
+  switch (el.type) {
+    case 'pen':
+    case 'eraser': return { ...el, points: off(el.points) };
+    case 'rect':   return { ...el, x: el.x + dx, y: el.y + dy };
+    case 'ellipse':return { ...el, cx: el.cx + dx, cy: el.cy + dy };
+    case 'line':
+    case 'arrow':  return { ...el, points: off(el.points) };
+    case 'text':   return { ...el, x: el.x + dx, y: el.y + dy };
+    default:       return el;
+  }
+}
+
+// ─── Element renderer ─────────────────────────────────────────────────────────
+
+interface SelectOpts {
+  selected: boolean;
+  onSelect: () => void;
+  onDragEnd: (dx: number, dy: number) => void;
+}
+
+function renderEl(el: DrawEl, selectOpts?: SelectOpts) {
+  const drag = selectOpts ? {
+    draggable: true,
+    onClick: (e: any) => { e.cancelBubble = true; selectOpts.onSelect(); },
+    onDragEnd: (e: any) => {
+      selectOpts.onDragEnd(e.target.x(), e.target.y());
+      e.target.position({ x: 0, y: 0 });
+    },
+  } : {};
+  const hl = selectOpts?.selected
+    ? { shadowColor: '#6965db', shadowBlur: 10, shadowOpacity: 1 }
+    : {};
+
   switch (el.type) {
     case 'pen':
       return <Line key={el.id} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth}
-               tension={0.5} lineCap="round" lineJoin="round" globalCompositeOperation="source-over" />;
+               tension={0.5} lineCap="round" lineJoin="round" globalCompositeOperation="source-over"
+               {...drag} {...hl} />;
     case 'eraser':
       return <Line key={el.id} points={el.points} stroke="#ffffff" strokeWidth={el.strokeWidth}
-               tension={0.5} lineCap="round" lineJoin="round" globalCompositeOperation="destination-out" />;
+               tension={0.5} lineCap="round" lineJoin="round" globalCompositeOperation="destination-out"
+               {...drag} />;
     case 'rect':
       return <Rect key={el.id}
-               x={el.w < 0 ? el.x + el.w : el.x} y={el.h < 0 ? el.y + el.h : el.y}
+               x={el.w < 0 ? el.x+el.w : el.x} y={el.h < 0 ? el.y+el.h : el.y}
                width={Math.abs(el.w)} height={Math.abs(el.h)}
-               stroke={el.color} strokeWidth={el.strokeWidth} fill={el.fill} />;
+               stroke={el.color} strokeWidth={el.strokeWidth} fill={el.fill}
+               {...drag} {...hl} />;
     case 'ellipse':
-      return <Ellipse key={el.id} x={el.cx} y={el.cy} radiusX={el.rx || 1} radiusY={el.ry || 1}
-               stroke={el.color} strokeWidth={el.strokeWidth} fill={el.fill} />;
+      return <Ellipse key={el.id} x={el.cx} y={el.cy} radiusX={el.rx||1} radiusY={el.ry||1}
+               stroke={el.color} strokeWidth={el.strokeWidth} fill={el.fill}
+               {...drag} {...hl} />;
     case 'line':
-      return <Line key={el.id} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth} lineCap="round" />;
+      return <Line key={el.id} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth}
+               lineCap="round" {...drag} {...hl} />;
     case 'arrow':
       return <KonvaArrow key={el.id} points={el.points} stroke={el.color} fill={el.color}
-               strokeWidth={el.strokeWidth} pointerLength={10} pointerWidth={8} />;
+               strokeWidth={el.strokeWidth} pointerLength={10} pointerWidth={8}
+               {...drag} {...hl} />;
     case 'text':
       return <KonvaText key={el.id} x={el.x} y={el.y} text={el.text}
-               fontSize={el.fontSize} fill={el.color} fontFamily="Caveat, cursive" />;
+               fontSize={el.fontSize} fill={el.color} fontFamily="Caveat, cursive"
+               {...drag} {...hl} />;
     default:
       return null;
   }
@@ -108,19 +180,33 @@ interface RoomPageProps { roomId: string; username: string; onLeave: () => void 
 export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
   // ── Drawing state ──────────────────────────────────────────────────────────
-  const [tool, setTool]   = useState<Tool>('pen');
-  const [color, setColor] = useState('#1a1a2e');
-  const [fill, setFill]   = useState('transparent');
-  const [sw, setSw]       = useState(2);
+  const [tool, setTool]       = useState<Tool>('pen');
+  const [color, setColor]     = useState('#1a1a2e');
+  const [fill, setFill]       = useState('transparent');
+  const [sw, setSw]           = useState(2);
+  const [eraserSize, setEraserSize] = useState(30);
   const [elements, setElements] = useState<DrawEl[]>([]);
 
-  const isDrawing     = useRef(false);
-  const currentEl     = useRef<DrawEl | null>(null);
-  const myUserIdRef   = useRef<string>('');
-  const myUndoneEls   = useRef<DrawEl[]>([]); // per-user redo stack
-  const lastProgress  = useRef(0);            // throttle draw_progress
+  // ── Selection state ────────────────────────────────────────────────────────
+  const [selectedIds, setSelectedIds]   = useState<Set<string>>(new Set());
+  const [selBox, setSelBox]             = useState<SelBox | null>(null);
+  // true = box is finalized (drag-to-move mode), false = box is being drawn
+  const [selFinalized, setSelFinalized] = useState(false);
 
-  // ── Remote live previews (other users currently drawing) ───────────────────
+  // ── Refs ───────────────────────────────────────────────────────────────────
+  const isDrawing        = useRef(false);
+  const isSelecting      = useRef(false);
+  const isMovingSelection = useRef(false);
+  const selMovePrevPos   = useRef<{ x: number; y: number } | null>(null);
+  const selBoxStart      = useRef<{ x: number; y: number } | null>(null);
+  const selBoxRef        = useRef<SelBox | null>(null);
+  const currentEl        = useRef<DrawEl | null>(null);
+  const myUserIdRef      = useRef<string>('');
+  const myUndoneEls      = useRef<DrawEl[]>([]);
+  const lastProgress     = useRef(0);
+  const stageRef         = useRef<any>(null);
+
+  // ── Remote live previews ───────────────────────────────────────────────────
   const [remotePreviews, setRemotePreviews] = useState<Record<string, DrawEl>>({});
 
   // ── Stage size ─────────────────────────────────────────────────────────────
@@ -129,9 +215,10 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   const [stageH, setStageH] = useState(600);
 
   // ── Text overlay ───────────────────────────────────────────────────────────
-  const [textPos, setTextPos] = useState<{ x: number; y: number } | null>(null);
-  const [textVal, setTextVal] = useState('');
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [textPos, setTextPos]   = useState<{ x: number; y: number } | null>(null);
+  const [textVal, setTextVal]   = useState('');
+  const textareaRef             = useRef<HTMLTextAreaElement>(null);
+  const textCommittedRef        = useRef(false);
 
   // ── Chat ───────────────────────────────────────────────────────────────────
   const [messages, setMessages] = useState<ChatMsg[]>([
@@ -156,20 +243,14 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     },
     onDraw: (el) => {
       setElements(prev => [...prev, el]);
-      // Remove that user's in-progress preview
       setRemotePreviews(prev => { const n = { ...prev }; delete n[el.userId ?? el.id]; return n; });
     },
     onDrawProgress: (el, senderId) => {
       if (!el) return;
       setRemotePreviews(prev => ({ ...prev, [senderId]: el }));
     },
-    onSync: (els) => {
-      setElements(els);
-    },
-    onClear: () => {
-      setElements([]);
-      setRemotePreviews({});
-    },
+    onSync: (els) => { setElements(els); },
+    onClear: () => { setElements([]); setRemotePreviews({}); },
     onChat: ({ text, sender, time }) => {
       setMessages(prev => [...prev, { id: genId(), text, sender, time, isMe: false }]);
     },
@@ -207,20 +288,27 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { if (textPos) textareaRef.current?.focus(); }, [textPos]);
 
-  // Keyboard shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) { e.preventDefault(); redo(); return; }
       const t = TOOLS.find(t => t.key === e.key);
-      if (t) setTool(t.id);
+      if (t) { setTool(t.id); clearSelection(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  // ─── Undo / Redo (per-user: only undoes your own strokes) ─────────────────
+  // ─── Selection helpers ─────────────────────────────────────────────────────
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setSelBox(null);
+    setSelFinalized(false);
+  }, []);
+
+  // ─── Undo / Redo ──────────────────────────────────────────────────────────
 
   const undo = useCallback(() => {
     const myId = myUserIdRef.current;
@@ -254,26 +342,92 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     send({ type: 'clear' });
   }, [send]);
 
+  // ─── Single-element drag (moves all selected elements) ────────────────────
+
+  const handleElementDragEnd = useCallback((id: string, dx: number, dy: number) => {
+    setElements(prev => {
+      const idsToMove = selectedIds.has(id) ? selectedIds : new Set([id]);
+      const updated = prev.map(el => idsToMove.has(el.id) ? applyOffset(el, dx, dy) : el);
+      send({ type: 'sync', elements: updated });
+      return updated;
+    });
+    // Keep selBox in sync if it's visible
+    setSelBox(prev => prev ? { ...prev, x: prev.x + dx, y: prev.y + dy } : null);
+  }, [send, selectedIds]);
+
   // ─── Drawing handlers ──────────────────────────────────────────────────────
 
-  const getPos = (e: any) => e.target.getStage()?.getPointerPosition() ?? null;
+  // Clamp pointer position to stage bounds so drawing never escapes the canvas
+  const getPos = () => {
+    const p = stageRef.current?.getPointerPosition();
+    if (!p) return null;
+    return {
+      x: Math.max(0, Math.min(p.x, stageW - 1)),
+      y: Math.max(0, Math.min(p.y, stageH - 1)),
+    };
+  };
+
+  // End drawing / selection if the mouse is released outside the Stage
+  useEffect(() => {
+    const onGlobalUp = () => handleUp();
+    window.addEventListener('mouseup', onGlobalUp);
+    return () => window.removeEventListener('mouseup', onGlobalUp);
+  }, []);
 
   const handleDown = (e: any) => {
-    if (tool === 'select' || tool === 'pan') return;
-    if (tool === 'text') {
-      const pos = getPos(e);
-      if (pos) { setTextPos(pos); setTextVal(''); }
+    if (tool === 'select') {
+      const pos = getPos();
+      if (!pos) return;
+
+      // If a finalized box exists and the click lands inside it, start moving
+      if (selFinalized && selBox && selectedIds.size > 0) {
+        const inside = pos.x >= selBox.x && pos.x <= selBox.x + selBox.w
+                    && pos.y >= selBox.y && pos.y <= selBox.y + selBox.h;
+        if (inside) {
+          isMovingSelection.current = true;
+          selMovePrevPos.current = pos;
+          return;
+        }
+      }
+
+      const hitStage = e.target === e.target.getStage();
+      if (!hitStage) {
+        // Clicked a drawing element outside the box → clear box, let its onClick single-select
+        setSelBox(null);
+        setSelFinalized(false);
+        return;
+      }
+
+      // Clicked canvas background → start a fresh selection box
+      setSelFinalized(false);
+      setSelectedIds(new Set());
+      selBoxStart.current = pos;
+      isSelecting.current = true;
+      const box: SelBox = { x: pos.x, y: pos.y, w: 0, h: 0 };
+      selBoxRef.current = box;
+      setSelBox(box);
       return;
     }
-    const pos = getPos(e);
+
+    if (tool === 'text') {
+      const pos = getPos();
+      if (pos) {
+        textCommittedRef.current = false;
+        setTextPos(pos);
+        setTextVal('');
+      }
+      return;
+    }
+
+    const pos = getPos();
     if (!pos) return;
     isDrawing.current = true;
-    myUndoneEls.current = []; // new stroke clears redo stack
+    myUndoneEls.current = [];
 
     const base: BaseEl = {
       id: `${myUserIdRef.current}-${genId()}`,
       color: tool === 'eraser' ? '#ffffff' : color,
-      strokeWidth: tool === 'eraser' ? sw * 6 : sw,
+      strokeWidth: tool === 'eraser' ? eraserSize : sw,
       userId: myUserIdRef.current,
     };
 
@@ -291,9 +445,39 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     setElements(prev => [...prev, el]);
   };
 
-  const handleMove = (e: any) => {
+  const handleMove = () => {
+    // Move finalized selection
+    if (isMovingSelection.current && selMovePrevPos.current) {
+      const pos = getPos();
+      if (pos) {
+        const dx = pos.x - selMovePrevPos.current.x;
+        const dy = pos.y - selMovePrevPos.current.y;
+        selMovePrevPos.current = pos;
+        if (dx !== 0 || dy !== 0) {
+          setElements(prev => prev.map(el => selectedIds.has(el.id) ? applyOffset(el, dx, dy) : el));
+          setSelBox(prev => prev ? { ...prev, x: prev.x + dx, y: prev.y + dy } : null);
+        }
+      }
+      return;
+    }
+
+    // Update selection box while drawing it
+    if (isSelecting.current && selBoxStart.current) {
+      const pos = getPos();
+      if (pos) {
+        const { x: sx, y: sy } = selBoxStart.current;
+        const box: SelBox = {
+          x: Math.min(sx, pos.x), y: Math.min(sy, pos.y),
+          w: Math.abs(pos.x - sx),  h: Math.abs(pos.y - sy),
+        };
+        selBoxRef.current = box;
+        setSelBox(box);
+      }
+      return;
+    }
+
     if (!isDrawing.current || !currentEl.current) return;
-    const pos = getPos(e);
+    const pos = getPos();
     if (!pos) return;
     const el = currentEl.current;
     let updated: DrawEl;
@@ -311,7 +495,6 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     currentEl.current = updated;
     setElements(prev => [...prev.slice(0, -1), updated]);
 
-    // Throttled live preview broadcast (~20 fps)
     const now = Date.now();
     if (now - lastProgress.current > 50) {
       lastProgress.current = now;
@@ -320,6 +503,43 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   };
 
   const handleUp = () => {
+    // Commit moved selection
+    if (isMovingSelection.current) {
+      isMovingSelection.current = false;
+      selMovePrevPos.current = null;
+      setElements(prev => { send({ type: 'sync', elements: prev }); return prev; });
+      return;
+    }
+
+    // Finalize selection box
+    if (isSelecting.current) {
+      isSelecting.current = false;
+      const box = selBoxRef.current;
+      selBoxRef.current = null;
+      selBoxStart.current = null;
+
+      if (!box || (box.w <= 5 && box.h <= 5)) {
+        // Just a click — clear
+        setSelBox(null);
+        setSelectedIds(new Set());
+        return;
+      }
+
+      // Find elements inside the box
+      setElements(prev => {
+        const newIds = new Set<string>();
+        prev.forEach(el => { if (elIntersectsBox(el, box)) newIds.add(el.id); });
+        setSelectedIds(newIds);
+        if (newIds.size > 0) {
+          setSelFinalized(true);
+        } else {
+          setSelBox(null);
+        }
+        return prev;
+      });
+      return;
+    }
+
     if (!isDrawing.current) return;
     isDrawing.current = false;
     const el = currentEl.current;
@@ -328,18 +548,21 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   };
 
   const commitText = () => {
+    if (textCommittedRef.current) return;
     if (!textPos || !textVal.trim()) { setTextPos(null); setTextVal(''); return; }
+    textCommittedRef.current = true;
     const el: TextEl = {
       id: `${myUserIdRef.current}-${genId()}`,
       type: 'text',
       x: textPos.x, y: textPos.y,
-      text: textVal,
+      text: textVal.trim(),
       color, strokeWidth: sw, fontSize: 20,
       userId: myUserIdRef.current,
     };
     setElements(prev => [...prev, el]);
     send({ type: 'draw', element: el });
-    setTextPos(null); setTextVal('');
+    setTextPos(null);
+    setTextVal('');
     myUndoneEls.current = [];
   };
 
@@ -348,15 +571,12 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   const sendMsg = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
-    // Optimistic add for sender
     setMessages(prev => [...prev, {
       id: genId(), text: chatInput.trim(), sender: username, time: nowStr(), isMe: true,
     }]);
     send({ type: 'chat', text: chatInput.trim() });
     setChatInput('');
   };
-
-  // ─── Copy room code ────────────────────────────────────────────────────────
 
   const copyCode = () => {
     navigator.clipboard.writeText(roomId).then(() => {
@@ -366,20 +586,19 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   };
 
   const cursor = ({
-    select: 'default', pan: 'grab', pen: 'crosshair', eraser: 'cell',
+    select: 'default', pen: 'crosshair', eraser: 'cell',
     text: 'text', rect: 'crosshair', ellipse: 'crosshair', line: 'crosshair', arrow: 'crosshair',
   } as Record<Tool, string>)[tool];
 
   // ─── JSX ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-white select-none"
-      style={{ fontFamily: 'Inter, sans-serif' }}>
+    <div className="flex flex-col w-screen overflow-hidden bg-white select-none"
+      style={{ fontFamily: 'Inter, sans-serif', height: '100dvh' }}>
 
       {/* ── Top bar ── */}
       <header className="flex items-center gap-2 px-3 py-2 border-b border-gray-100 bg-white z-20 shrink-0">
 
-        {/* Leave */}
         <button onClick={onLeave}
           className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800 transition-colors px-2 py-1 rounded-lg hover:bg-gray-100">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -387,7 +606,6 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
           <span className="hidden sm:inline">Leave</span>
         </button>
 
-        {/* Room code */}
         <button onClick={copyCode}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 transition-all"
           title="Copy room code">
@@ -397,7 +615,6 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
             : <span className="text-gray-400">{Icons.copy}</span>}
         </button>
 
-        {/* Connection status */}
         <div className="flex items-center gap-1.5" title={connected ? 'Connected' : 'Reconnecting…'}>
           <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-amber-400 animate-pulse'}`} />
           <span className="text-xs text-gray-400 hidden sm:block">{connected ? 'Live' : 'Connecting…'}</span>
@@ -405,7 +622,6 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
         <div className="flex-1" />
 
-        {/* Undo / Redo / Clear */}
         <button onClick={undo} title="Undo (Ctrl+Z)"
           className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition-colors">
           {Icons.undo}
@@ -421,14 +637,12 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
         <div className="w-px h-5 bg-gray-200 mx-1" />
 
-        {/* Share */}
         <button onClick={copyCode}
           className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors">
           {Icons.share}
           <span>Share</span>
         </button>
 
-        {/* Chat toggle */}
         <button onClick={() => setChatOpen(o => !o)}
           className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border
             ${chatOpen ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
@@ -447,7 +661,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
         style={{ scrollbarWidth: 'none' }}>
 
         {TOOLS.map(t => (
-          <button key={t.id} onClick={() => setTool(t.id)} title={`${t.label} (${t.key})`}
+          <button key={t.id} onClick={() => { setTool(t.id); clearSelection(); }} title={`${t.label} (${t.key})`}
             className={`p-2 rounded-lg transition-all shrink-0 ${tool === t.id
               ? 'bg-indigo-100 text-indigo-700 shadow-sm'
               : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}>
@@ -457,7 +671,6 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
         <div className="w-px h-6 bg-gray-200 mx-1.5 shrink-0" />
 
-        {/* Color palette */}
         {PALETTE.map(c => (
           <button key={c} onClick={() => setColor(c)}
             className="shrink-0 w-6 h-6 rounded-full border-2 transition-transform hover:scale-110"
@@ -468,7 +681,6 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
               outlineOffset: '1px',
             }} />
         ))}
-        {/* Custom color picker */}
         <label title="Custom color"
           className="shrink-0 w-6 h-6 rounded-full border-2 border-dashed border-gray-300 hover:border-indigo-400 cursor-pointer flex items-center justify-center relative overflow-hidden">
           <input type="color" value={color} onChange={e => setColor(e.target.value)}
@@ -478,7 +690,6 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
         <div className="w-px h-6 bg-gray-200 mx-1.5 shrink-0" />
 
-        {/* Fill toggle */}
         <button onClick={() => setFill(fill === 'transparent' ? color : 'transparent')}
           title="Toggle fill"
           className="shrink-0 w-6 h-6 rounded border-2 border-gray-300 hover:border-indigo-400 transition-colors flex items-center justify-center"
@@ -488,14 +699,30 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
         <div className="w-px h-6 bg-gray-200 mx-1.5 shrink-0" />
 
-        {/* Stroke widths */}
-        {STROKE_WIDTHS.map(w => (
-          <button key={w} onClick={() => setSw(w)} title={`Stroke ${w}px`}
-            className={`shrink-0 flex items-center justify-center w-8 h-7 rounded-lg transition-all ${
-              sw === w ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'}`}>
-            <div className="bg-current rounded-full" style={{ width: Math.min(w * 3.5, 22), height: w }} />
-          </button>
-        ))}
+        {tool === 'eraser' ? (
+          <>
+            <span className="text-xs text-gray-400 shrink-0 mr-1 ml-1">Size</span>
+            {ERASER_SIZES.map(s => {
+              const dim = Math.round(2 + s / 10);
+              return (
+                <button key={s} onClick={() => setEraserSize(s)} title={`Eraser ${s}px`}
+                  className={`shrink-0 flex items-center justify-center rounded-lg transition-all px-2 h-8 ${
+                    eraserSize === s ? 'bg-indigo-100 text-indigo-700' : 'text-gray-400 hover:bg-gray-100'}`}>
+                  <div className="rounded-full border-2 border-current flex-shrink-0"
+                    style={{ width: Math.min(dim, 26), height: Math.min(dim, 26) }} />
+                </button>
+              );
+            })}
+          </>
+        ) : (
+          STROKE_WIDTHS.map(w => (
+            <button key={w} onClick={() => setSw(w)} title={`Stroke ${w}px`}
+              className={`shrink-0 flex items-center justify-center w-8 h-7 rounded-lg transition-all ${
+                sw === w ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'}`}>
+              <div className="bg-current rounded-full" style={{ width: Math.min(w * 3.5, 22), height: w }} />
+            </button>
+          ))
+        )}
       </div>
 
       {/* ── Main area ── */}
@@ -504,16 +731,55 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
         {/* Canvas */}
         <div ref={containerRef} className="flex-1 relative bg-white overflow-hidden" style={{ cursor }}>
           <Stage
+            ref={stageRef}
             width={stageW} height={stageH}
             onMouseDown={handleDown} onMousemove={handleMove} onMouseup={handleUp}
             onTouchStart={handleDown} onTouchMove={handleMove} onTouchEnd={handleUp}
           >
-            {/* Completed elements */}
-            <Layer>{elements.map(renderEl)}</Layer>
-            {/* Remote live previews (semi-transparent) */}
+            {/* Drawing elements */}
+            <Layer>
+              {elements.map(el => renderEl(el, tool === 'select' ? {
+                selected: selectedIds.has(el.id),
+                // When a multi-select box is active, suppress individual element interactions
+                onSelect: selFinalized ? () => {} : () => setSelectedIds(new Set([el.id])),
+                onDragEnd: selFinalized ? () => {} : (dx, dy) => handleElementDragEnd(el.id, dx, dy),
+              } : undefined))}
+            </Layer>
+
+            {/* Remote live previews */}
             <Layer opacity={0.6}>
               {Object.values(remotePreviews).map(el => renderEl({ ...el, id: `preview-${el.id}` } as DrawEl))}
             </Layer>
+
+            {/* Selection box being drawn (non-interactive) */}
+            {selBox && !selFinalized && (
+              <Layer listening={false}>
+                <Rect
+                  x={selBox.x} y={selBox.y} width={selBox.w} height={selBox.h}
+                  fill="rgba(105,101,219,0.05)" stroke="#6965db" strokeWidth={1}
+                  dash={[6, 3]}
+                />
+              </Layer>
+            )}
+
+            {/* Finalized selection box — visual + move cursor hint */}
+            {selBox && selFinalized && selectedIds.size > 0 && (
+              <Layer>
+                <Rect
+                  x={selBox.x} y={selBox.y} width={selBox.w} height={selBox.h}
+                  fill="rgba(105,101,219,0.06)" stroke="#6965db" strokeWidth={1.5}
+                  dash={[6, 3]}
+                  onMouseEnter={(e: any) => {
+                    const s = e.target.getStage();
+                    if (s) s.container().style.cursor = 'move';
+                  }}
+                  onMouseLeave={(e: any) => {
+                    const s = e.target.getStage();
+                    if (s) s.container().style.cursor = 'default';
+                  }}
+                />
+              </Layer>
+            )}
           </Stage>
 
           {/* Text input overlay */}
@@ -529,19 +795,29 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
               }}
               rows={1}
               placeholder="Type here…"
-              className="absolute resize-none border-0 outline-none bg-transparent p-0 m-0 leading-normal"
               style={{
-                left: textPos.x, top: textPos.y,
-                fontFamily: 'Caveat, cursive', fontSize: 20,
-                color, minWidth: 120, minHeight: 28,
+                position: 'absolute',
+                left: textPos.x,
+                top: textPos.y,
+                fontFamily: 'Caveat, cursive',
+                fontSize: 20,
+                color,
                 caretColor: color,
-                boxShadow: `0 0 0 2px ${color}44`,
-                borderRadius: 2,
-              }}
+                minWidth: 140,
+                minHeight: 30,
+                background: 'rgba(255,255,255,0.9)',
+                border: `2px solid ${color}88`,
+                borderRadius: 4,
+                padding: '2px 6px',
+                outline: 'none',
+                resize: 'none',
+                lineHeight: '1.3',
+                userSelect: 'text',
+                WebkitUserSelect: 'text',
+              } as React.CSSProperties}
             />
           )}
 
-          {/* Canvas hint */}
           {elements.length === 0 && !textPos && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <p style={{ fontFamily: 'Caveat, cursive', fontSize: '1.3rem', color: '#9ca3af' }}>
@@ -559,7 +835,6 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
             : 'w-0 overflow-hidden'}
         `}>
           {chatOpen && <>
-            {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 shrink-0">
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-gray-800"
@@ -574,15 +849,12 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
               </button>
             </div>
 
-            {/* Online users list */}
             {onlineUsers.length > 0 && (
               <div className="flex flex-wrap gap-1.5 px-4 py-2 border-b border-gray-50">
                 {onlineUsers.map(u => (
                   <span key={u.id}
                     className={`text-sm px-2.5 py-0.5 rounded-full font-medium ${
-                      u.id === myUserIdRef.current
-                        ? 'bg-indigo-100 text-indigo-700'
-                        : 'bg-gray-100 text-gray-700'
+                      u.id === myUserIdRef.current ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-700'
                     }`}
                     style={{ fontFamily: 'Inter, sans-serif' }}>
                     {u.id === myUserIdRef.current ? `${u.username} (you)` : u.username}
@@ -591,12 +863,11 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
               </div>
             )}
 
-            {/* Messages */}
             <div className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3">
               {messages.map(msg => (
                 <div key={msg.id} className={`flex flex-col ${msg.isMe ? 'items-end' : 'items-start'}`}>
                   {!msg.isMe && !msg.system && (
-                    <span className="text-xs font-semibold text-gray-600 mb-1 px-1" style={{ fontFamily: 'Inter, sans-serif' }}>
+                    <span className="text-xs font-semibold text-gray-600 mb-1 px-1">
                       {msg.sender}
                     </span>
                   )}
@@ -617,7 +888,6 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
               <div ref={messagesEnd} />
             </div>
 
-            {/* Input */}
             <form onSubmit={sendMsg}
               className="flex items-center gap-2 px-3 py-3 border-t border-gray-100 shrink-0">
               <input
@@ -626,7 +896,6 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
                 onChange={e => setChatInput(e.target.value)}
                 placeholder="Send a message…"
                 className="flex-1 px-3 py-2 text-sm rounded-xl border border-gray-200 outline-none focus:border-indigo-400 transition-colors bg-gray-50"
-                style={{ fontFamily: 'Inter, sans-serif' }}
               />
               <button type="submit" disabled={!chatInput.trim()}
                 className="p-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-xl transition-colors shrink-0">
