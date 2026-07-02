@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { Stage, Layer, Line, Rect, Ellipse, Arrow as KonvaArrow, Text as KonvaText } from 'react-konva';
 import { useCollabWS, type WSUser } from '../hooks/useCollabWS';
 
@@ -22,7 +22,7 @@ interface SelBox   { x: number; y: number; w: number; h: number }
 
 const PALETTE      = ['#1a1a2e','#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#6965db','#a855f7','#ec4899'];
 const STROKE_WIDTHS = [1, 2, 4, 8];
-const ERASER_SIZES  = [10, 30, 80, 200];
+const ERASER_SIZES  = [30, 80, 130, 300];
 const genId = () => Math.random().toString(36).slice(2, 9);
 
 function nowStr() {
@@ -239,6 +239,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
   // ── Misc UI ────────────────────────────────────────────────────────────────
   const [copied, setCopied] = useState(false);
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
 
   // ─── WebSocket handlers ────────────────────────────────────────────────────
   const { send, connected } = useCollabWS(roomId, username, {
@@ -292,7 +293,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   }, []);
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
-  useEffect(() => { if (textPos) textareaRef.current?.focus(); }, [textPos]);
+  useLayoutEffect(() => { if (textPos) textareaRef.current?.focus(); }, [textPos]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -431,15 +432,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
       return;
     }
 
-    if (tool === 'text') {
-      const pos = getPos();
-      if (pos) {
-        textCommittedRef.current = false;
-        setTextPos(pos);
-        setTextVal('');
-      }
-      return;
-    }
+    if (tool === 'text') return; // text placement handled by container onClick
 
     const pos = getPos();
     if (!pos) return;
@@ -622,7 +615,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   };
 
   const cursor = ({
-    select: 'default', pen: 'crosshair', eraser: 'cell',
+    select: 'default', pen: 'crosshair', eraser: 'none',
     text: 'text', rect: 'crosshair', ellipse: 'crosshair', line: 'crosshair', arrow: 'crosshair',
   } as Record<Tool, string>)[tool];
 
@@ -724,14 +717,17 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
           <span className="text-gray-400 text-xs pointer-events-none">+</span>
         </label>
 
-        <div className="w-px h-6 bg-gray-200 mx-1.5 shrink-0" />
-
-        <button onClick={() => setFill(fill === 'transparent' ? color : 'transparent')}
-          title="Toggle fill"
-          className="shrink-0 w-6 h-6 rounded border-2 border-gray-300 hover:border-indigo-400 transition-colors flex items-center justify-center"
-          style={{ backgroundColor: fill === 'transparent' ? 'white' : fill }}>
-          {fill === 'transparent' && <span className="text-gray-300 text-[10px] leading-none">∅</span>}
-        </button>
+        {(tool === 'rect' || tool === 'ellipse') && (
+          <>
+            <div className="w-px h-6 bg-gray-200 mx-1.5 shrink-0" />
+            <button onClick={() => setFill(fill === 'transparent' ? color : 'transparent')}
+              title="Toggle fill"
+              className="shrink-0 w-6 h-6 rounded border-2 border-gray-300 hover:border-indigo-400 transition-colors flex items-center justify-center"
+              style={{ backgroundColor: fill === 'transparent' ? 'white' : fill }}>
+              {fill === 'transparent' && <span className="text-gray-300 text-[10px] leading-none">∅</span>}
+            </button>
+          </>
+        )}
 
         <div className="w-px h-6 bg-gray-200 mx-1.5 shrink-0" />
 
@@ -765,7 +761,25 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
       <div className="flex flex-1 overflow-hidden relative">
 
         {/* Canvas */}
-        <div ref={containerRef} className="flex-1 relative bg-white overflow-hidden" style={{ cursor }}>
+        <div
+          ref={containerRef}
+          className="flex-1 relative bg-white overflow-hidden"
+          style={{ cursor }}
+          onClick={e => {
+            if (tool !== 'text') return;
+            // Don't re-trigger if the click was on the textarea itself
+            if (textareaRef.current && (e.target === textareaRef.current)) return;
+            const r = e.currentTarget.getBoundingClientRect();
+            textCommittedRef.current = false;
+            setTextPos({ x: e.clientX - r.left, y: e.clientY - r.top });
+            setTextVal('');
+          }}
+          onMouseMove={e => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setMousePos({ x: e.clientX - r.left, y: e.clientY - r.top });
+          }}
+          onMouseLeave={() => setMousePos(null)}
+        >
           <Stage
             ref={stageRef}
             width={stageW} height={stageH}
@@ -822,6 +836,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
           {textPos && (
             <textarea
               ref={textareaRef}
+              autoFocus
               value={textVal}
               onChange={e => setTextVal(e.target.value)}
               onBlur={commitText}
@@ -860,6 +875,24 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
                 Pick a tool &amp; start drawing!
               </p>
             </div>
+          )}
+
+          {/* Eraser cursor indicator */}
+          {tool === 'eraser' && mousePos && (
+            <div
+              style={{
+                position: 'absolute',
+                left: mousePos.x - eraserSize / 2,
+                top: mousePos.y - eraserSize / 2,
+                width: eraserSize,
+                height: eraserSize,
+                borderRadius: '50%',
+                border: '1.5px solid rgba(0,0,0,0.55)',
+                boxShadow: '0 0 0 0.5px rgba(255,255,255,0.8)',
+                pointerEvents: 'none',
+                zIndex: 20,
+              }}
+            />
           )}
         </div>
 
