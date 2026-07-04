@@ -241,12 +241,16 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   const [copied, setCopied] = useState(false);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
 
+  // ── Room join state ────────────────────────────────────────────────────────
+  const [joined, setJoined] = useState(false);
+
   // ─── WebSocket handlers ────────────────────────────────────────────────────
   const { send, connected } = useCollabWS(roomId, username, {
     onInit: (userId, els, users) => {
       myUserIdRef.current = userId;
       setElements(els);
       setOnlineUsers(users);
+      setJoined(true);
     },
     onDraw: (el) => {
       setElements(prev => [...prev, el]);
@@ -620,6 +624,24 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   } as Record<Tool, string>)[tool];
 
   // ─── JSX ──────────────────────────────────────────────────────────────────
+
+  if (!joined) {
+    return (
+      <div className="flex flex-col items-center justify-center w-screen gap-4 bg-white select-none"
+        style={{ fontFamily: 'Inter, sans-serif', height: '100dvh' }}>
+        <div className="w-10 h-10 rounded-full border-4 border-indigo-100 border-t-indigo-600 animate-spin" />
+        <p className="text-gray-500 text-sm">
+          {connected ? 'Joining room…' : 'Connecting…'}
+        </p>
+        <span className="font-mono font-semibold tracking-widest text-indigo-600 text-xs px-2.5 py-1.5 rounded-lg border border-gray-200">
+          {roomId}
+        </span>
+        <button onClick={onLeave} className="text-sm text-gray-400 hover:text-gray-700 transition-colors mt-2">
+          Cancel
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col w-screen overflow-hidden bg-white select-none"
