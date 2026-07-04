@@ -294,7 +294,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     const ro = new ResizeObserver(update);
     if (containerRef.current) ro.observe(containerRef.current);
     return () => ro.disconnect();
-  }, []);
+  }, [joined]);
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useLayoutEffect(() => { if (textPos) textareaRef.current?.focus(); }, [textPos]);

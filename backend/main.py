@@ -1,8 +1,12 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+import asyncio
 import uuid
 from datetime import datetime
 from typing import Dict, List, Any
+
+HEARTBEAT_INTERVAL = 20  # seconds; keeps idle connections alive through proxies (e.g. Render)
+SEND_TIMEOUT = 5  # seconds; a hung send shouldn't block delivery to everyone else
 
 app = FastAPI()
 
@@ -31,16 +35,25 @@ def get_or_create_room(room_id: str) -> Room:
 
 
 async def broadcast(room: Room, message: dict, exclude_id: str | None = None):
-    dead = []
-    for uid, conn in list(room.connections.items()):
-        if uid == exclude_id:
-            continue
+    targets = [(uid, conn) for uid, conn in list(room.connections.items()) if uid != exclude_id]
+
+    async def send_one(uid: str, conn: dict) -> str | None:
         try:
-            await conn["ws"].send_json(message)
+            await asyncio.wait_for(conn["ws"].send_json(message), timeout=SEND_TIMEOUT)
+            return None
         except Exception:
-            dead.append(uid)
-    for uid in dead:
-        room.connections.pop(uid, None)
+            return uid
+
+    results = await asyncio.gather(*(send_one(uid, conn) for uid, conn in targets))
+    for uid in results:
+        if uid is not None:
+            room.connections.pop(uid, None)
+
+
+async def send_heartbeat(ws: WebSocket):
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+        await ws.send_json({"type": "ping"})
 
 
 def user_list(room: Room) -> list:
@@ -92,6 +105,8 @@ async def ws_endpoint(ws: WebSocket, room_id: str):
         "username": username,
         "users": user_list(room),
     }, exclude_id=user_id)
+
+    heartbeat_task = asyncio.create_task(send_heartbeat(ws))
 
     try:
         while True:
@@ -151,6 +166,7 @@ async def ws_endpoint(ws: WebSocket, room_id: str):
     except WebSocketDisconnect:
         pass
     finally:
+        heartbeat_task.cancel()
         # Only clean up if this WS is still the active connection for this user_id.
         # A reconnect may have already replaced it — in that case, do nothing.
         if room.connections.get(user_id, {}).get("ws") is ws:
