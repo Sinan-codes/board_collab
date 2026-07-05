@@ -191,14 +191,19 @@ export default function HomePage({ onCreateRoom, onJoinRoom }: HomePageProps) {
     setCheckingRoom(true);
     try {
       const res = await fetch(`${HTTP_BASE}/rooms/${encodeURIComponent(code)}/exists`);
-      const data = await res.json();
-      if (!data.exists) {
-        setJoinError(`Room "${code}" doesn't exist. Check the code and try again.`);
-        return;
+      // If the endpoint itself is unreachable or unrecognized (e.g. a stale
+      // backend deploy), don't block the join on it — let the WebSocket
+      // connection be the source of truth, same as before this check existed.
+      if (res.ok) {
+        const data = await res.json();
+        if (data.exists === false) {
+          setJoinError(`Room "${code}" doesn't exist. Check the code and try again.`);
+          return;
+        }
       }
       onJoinRoom(code, name);
     } catch {
-      setJoinError('Could not reach the server. Please try again.');
+      onJoinRoom(code, name);
     } finally {
       setCheckingRoom(false);
     }

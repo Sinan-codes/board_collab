@@ -25,6 +25,14 @@ const STROKE_WIDTHS = [1, 2, 4, 8];
 const ERASER_SIZES  = [30, 80, 130, 300];
 const genId = () => Math.random().toString(36).slice(2, 9);
 
+const LOADING_MESSAGES = [
+  'Sharpening pencils…',
+  'Unrolling the canvas…',
+  'Mixing up some colors…',
+  'Waiting for the ink to dry…',
+  'Setting up your easel…',
+];
+
 function nowStr() {
   const d = new Date();
   return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
@@ -243,6 +251,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
   // ── Room join state ────────────────────────────────────────────────────────
   const [joined, setJoined] = useState(false);
+  const [loadingMsgIdx, setLoadingMsgIdx] = useState(0);
 
   // ─── WebSocket handlers ────────────────────────────────────────────────────
   const { send, connected } = useCollabWS(roomId, username, {
@@ -297,6 +306,12 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   }, [joined]);
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  useEffect(() => {
+    if (joined) return;
+    const id = setInterval(() => setLoadingMsgIdx(i => (i + 1) % LOADING_MESSAGES.length), 1800);
+    return () => clearInterval(id);
+  }, [joined]);
   useLayoutEffect(() => { if (textPos) textareaRef.current?.focus(); }, [textPos]);
 
   useEffect(() => {
@@ -627,15 +642,44 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
   if (!joined) {
     return (
-      <div className="flex flex-col items-center justify-center w-screen gap-4 bg-white select-none"
+      <div className="relative flex flex-col items-center justify-center w-screen gap-5 bg-white select-none overflow-hidden"
         style={{ fontFamily: 'Inter, sans-serif', height: '100dvh' }}>
-        <div className="w-10 h-10 rounded-full border-4 border-indigo-100 border-t-indigo-600 animate-spin" />
-        <p className="text-gray-500 text-sm">
-          {connected ? 'Joining room…' : 'Connecting…'}
+
+        {/* dot-grid backdrop, consistent with the home page */}
+        <div className="absolute inset-0 pointer-events-none"
+          style={{
+            backgroundImage: 'radial-gradient(#e3f0fa 1.5px, transparent 1.5px)',
+            backgroundSize: '24px 24px',
+          }} />
+
+        {/* self-drawing squiggle with a pencil riding along it */}
+        <div className="relative w-40 h-16">
+          <svg viewBox="0 0 160 64" width="160" height="64" fill="none" className="absolute inset-0">
+            <path
+              d="M4 44 Q 24 8, 44 32 T 84 32 T 124 32 T 156 20"
+              stroke="var(--color-brand)" strokeWidth="3" strokeLinecap="round"
+              className="pencil-draw"
+            />
+          </svg>
+          <div className="absolute -top-1 right-2 text-brand pencil-hop">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20h9M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" />
+            </svg>
+          </div>
+        </div>
+
+        <p className="text-gray-500 text-sm min-h-[1.25rem]" style={{ fontFamily: 'Caveat, cursive', fontSize: '1.3rem' }}>
+          {connected ? 'Joining room…' : LOADING_MESSAGES[loadingMsgIdx]}
         </p>
-        <span className="font-mono font-semibold tracking-widest text-indigo-600 text-xs px-2.5 py-1.5 rounded-lg border border-gray-200">
-          {roomId}
-        </span>
+
+        <div className="relative -rotate-2">
+          <div className="absolute -top-2.5 left-1/2 -translate-x-1/2 w-10 h-4 bg-brand/25 border border-white/40 shadow-sm" />
+          <span className="block font-mono font-semibold tracking-widest text-brand text-xs px-3 py-1.5 rounded-lg border border-gray-200 bg-white shadow-sm">
+            {roomId}
+          </span>
+        </div>
+
         <button onClick={onLeave} className="text-sm text-gray-400 hover:text-gray-700 transition-colors mt-2">
           Cancel
         </button>
