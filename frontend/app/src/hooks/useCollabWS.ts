@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 
 const WS_BASE = (import.meta.env.VITE_WS_URL as string | undefined) ?? 'ws://localhost:8000';
+export const HTTP_BASE = WS_BASE.replace(/^ws/, 'http');
 
 function getOrCreateClientId(): string {
   const stored = sessionStorage.getItem('bc_client_id');

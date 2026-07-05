@@ -3,9 +3,9 @@
 @theme {
   --font-caveat: 'Caveat', cursive;
   --font-inter: 'Inter', sans-serif;
-  --color-brand: #6965db;
-  --color-brand-dark: #4f4cb8;
-  --color-brand-light: #ededfb;
+  --color-brand: #3397dc;
+  --color-brand-dark: #016ec2;
+  --color-brand-light: #e7f3fc;
 }
 
 * {
@@ -22,4 +22,67 @@ body {
 /* Konva renders a <canvas> which is inline by default — block removes the bottom gap */
 canvas {
   display: block;
+}
+
+/* Idle "sketch is alive" motion — big enough to notice at a glance, staggered, never in sync */
+@keyframes doodle-float-a {
+  0%, 100%  { transform: translate(0, 0) rotate(var(--rot, -8deg)); }
+  50%       { transform: translate(10px, -26px) rotate(var(--rot2, 10deg)); }
+}
+@keyframes doodle-float-b {
+  0%, 100%  { transform: translate(0, 0) rotate(var(--rot, 8deg)); }
+  50%       { transform: translate(-12px, -30px) rotate(var(--rot2, -10deg)); }
+}
+@keyframes doodle-bob {
+  0%, 100%  { transform: translateY(0) rotate(var(--rot, -6deg)) scale(1); }
+  50%       { transform: translateY(-18px) rotate(var(--rot2, 6deg)) scale(1.15); }
+}
+@keyframes doodle-wiggle {
+  0%, 100%  { transform: rotate(-10deg) scale(1); }
+  50%       { transform: rotate(10deg) scale(1.08); }
+}
+@keyframes doodle-draw-in {
+  from { stroke-dashoffset: var(--dash, 300); opacity: 0; }
+  to   { stroke-dashoffset: 0; opacity: 1; }
+}
+
+.doodle-float-a { animation: doodle-float-a 4.5s ease-in-out infinite; }
+.doodle-float-b { animation: doodle-float-b 5s ease-in-out infinite; }
+.doodle-bob     { animation: doodle-bob 3.2s ease-in-out infinite; }
+.doodle-wiggle  { animation: doodle-wiggle 2.6s ease-in-out infinite; }
+
+/* Roaming "collaborator" cursors — loose, organic loops that never repeat in sync */
+@keyframes cursor-roam-1 {
+  0%   { transform: translate(0px, 0px); }
+  22%  { transform: translate(130px, 50px); }
+  48%  { transform: translate(70px, 160px); }
+  74%  { transform: translate(-70px, 90px); }
+  100% { transform: translate(0px, 0px); }
+}
+@keyframes cursor-roam-2 {
+  0%   { transform: translate(0px, 0px); }
+  30%  { transform: translate(-110px, 70px); }
+  62%  { transform: translate(-50px, -90px); }
+  100% { transform: translate(0px, 0px); }
+}
+@keyframes cursor-roam-3 {
+  0%   { transform: translate(0px, 0px); }
+  35%  { transform: translate(100px, -60px); }
+  68%  { transform: translate(-80px, -35px); }
+  100% { transform: translate(0px, 0px); }
+}
+.cursor-roam-1 { animation: cursor-roam-1 15s ease-in-out infinite; }
+.cursor-roam-2 { animation: cursor-roam-2 18s ease-in-out infinite; }
+.cursor-roam-3 { animation: cursor-roam-3 21s ease-in-out infinite; }
+
+/* Sticky note settling onto the board on load */
+@keyframes note-settle {
+  from { transform: translateY(14px) rotate(var(--settle-rot, 0deg)) scale(0.97); opacity: 0; }
+  to   { transform: translateY(0) rotate(var(--settle-rot, 0deg)) scale(1); opacity: 1; }
+}
+.note-settle { animation: note-settle 0.6s cubic-bezier(.2,.8,.2,1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .doodle-float-a, .doodle-float-b, .doodle-bob, .doodle-wiggle,
+  .cursor-roam-1, .cursor-roam-2, .cursor-roam-3, .note-settle { animation: none; }
 }

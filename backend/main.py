@@ -69,6 +69,11 @@ def root():
     return {"status": "ok", "rooms": len(rooms)}
 
 
+@app.get("/rooms/{room_id}/exists")
+def room_exists(room_id: str):
+    return {"exists": room_id.upper() in rooms}
+
+
 @app.websocket("/ws/{room_id}")
 async def ws_endpoint(ws: WebSocket, room_id: str):
     await ws.accept()
