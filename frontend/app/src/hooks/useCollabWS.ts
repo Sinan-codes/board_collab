@@ -22,6 +22,7 @@ export interface WSHandlers {
   onChat:         (msg: { text: string; sender: string; senderId: string; time: string }) => void;
   onUserJoined:   (userId: string, username: string, users: WSUser[]) => void;
   onUserLeft:     (userId: string, username: string, users: WSUser[]) => void;
+  onCursor:       (userId: string, x: number, y: number) => void;
 }
 
 export function useCollabWS(roomId: string, username: string, handlers: WSHandlers) {
@@ -56,6 +57,7 @@ export function useCollabWS(roomId: string, username: string, handlers: WSHandle
         case 'chat':          h.onChat({ text: msg.text, sender: msg.sender, senderId: msg.senderId, time: msg.time }); break;
         case 'user_joined':   h.onUserJoined(msg.userId, msg.username, msg.users ?? []); break;
         case 'user_left':     h.onUserLeft(msg.userId, msg.username, msg.users ?? []); break;
+        case 'cursor':        h.onCursor(msg.userId, msg.x, msg.y); break;
       }
     };
 

@@ -223,16 +223,18 @@ export default function HomePage({ onCreateRoom, onJoinRoom }: HomePageProps) {
       <FloatingDoodles />
       <RoamingCursors />
 
-      {/* Logo sticker, pinned in the corner */}
-      <div className="absolute top-4 left-4 sm:top-6 sm:left-6 z-20 flex items-center gap-2 -rotate-6 drop-shadow-sm">
-        <svg width="32" height="32" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0">
-          <rect width="44" height="44" rx="10" fill="#3397dc" />
-          <path d="M10 32 L20 14 L26 24 L30 18 L36 32" stroke="white" strokeWidth="2.5"
-            strokeLinecap="round" strokeLinejoin="round" fill="none" />
-          <circle cx="30" cy="12" r="3.5" fill="white" opacity="0.9" />
-        </svg>
-        <span className="text-base font-extrabold tracking-tight text-[#1a1a2e] hidden sm:inline" style={{ fontFamily: 'Inter, sans-serif' }}>
-          BoardCollab
+      {/* Wordmark, pinned in the corner — the lettering *is* the logo */}
+      <div className="absolute top-4 left-4 sm:top-6 sm:left-6 z-20 -rotate-3 drop-shadow-sm">
+        <span
+          className="relative text-3xl sm:text-4xl"
+          style={{ fontFamily: 'Caveat, cursive', fontWeight: 700, color: '#3397dc' }}
+        >
+          Board
+          <span className="text-[#1a1a2e]">Collab</span>
+          <span
+            className="absolute left-0 -bottom-0.5 h-[3px] w-full rounded-full bg-brand/50 -rotate-1"
+            aria-hidden="true"
+          />
         </span>
       </div>
 

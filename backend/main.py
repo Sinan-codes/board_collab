@@ -161,6 +161,15 @@ async def ws_endpoint(ws: WebSocket, room_id: str):
                     "senderId": user_id,
                 }, exclude_id=user_id)
 
+            elif msg_type == "cursor":
+                # Live pointer position — ephemeral, never persisted
+                await broadcast(room, {
+                    "type": "cursor",
+                    "userId": user_id,
+                    "x": data.get("x"),
+                    "y": data.get("y"),
+                }, exclude_id=user_id)
+
             elif msg_type == "clear":
                 room.elements = []
                 await broadcast(room, {

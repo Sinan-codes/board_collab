@@ -82,6 +82,18 @@ canvas {
 }
 .note-settle { animation: note-settle 0.6s cubic-bezier(.2,.8,.2,1) both; }
 
+/* Chat: member popover pop-in and per-message fade-up */
+@keyframes popover-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.popover-in { animation: popover-in 0.15s cubic-bezier(.2,.8,.2,1) both; transform-origin: top left; }
+.msg-in     { animation: msg-in 0.2s ease-out both; }
+
 /* Room loading screen — a pencil endlessly sketching the same squiggle */
 @keyframes pencil-draw {
   0%   { stroke-dashoffset: 220; }
@@ -99,5 +111,5 @@ canvas {
 @media (prefers-reduced-motion: reduce) {
   .doodle-float-a, .doodle-float-b, .doodle-bob, .doodle-wiggle,
   .cursor-roam-1, .cursor-roam-2, .cursor-roam-3, .note-settle,
-  .pencil-draw, .pencil-hop { animation: none; }
+  .pencil-draw, .pencil-hop, .popover-in, .msg-in { animation: none; }
 }

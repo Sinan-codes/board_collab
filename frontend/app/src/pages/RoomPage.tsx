@@ -15,7 +15,7 @@ interface ArrowEl   extends BaseEl { type: 'arrow';   points: number[] }
 interface TextEl    extends BaseEl { type: 'text';    x: number; y: number; text: string; fontSize: number }
 type DrawEl = PenEl | RectEl | EllipseEl | LineEl | ArrowEl | TextEl;
 
-interface ChatMsg { id: string; text: string; sender: string; time: string; isMe: boolean; system?: boolean }
+interface ChatMsg { id: string; text: string; sender: string; senderId?: string; time: string; isMe: boolean; system?: boolean }
 interface SelBox   { x: number; y: number; w: number; h: number }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -24,6 +24,15 @@ const PALETTE      = ['#1a1a2e','#ef4444','#f97316','#eab308','#22c55e','#3b82f6
 const STROKE_WIDTHS = [1, 2, 4, 8];
 const ERASER_SIZES  = [30, 80, 130, 300];
 const genId = () => Math.random().toString(36).slice(2, 9);
+
+// ─── Per-user identity color — stable across the session, used for cursors,
+// avatars and chat so each collaborator reads as "the same person" everywhere.
+const USER_COLORS = ['#3397dc', '#fb7185', '#34d399', '#f59e0b', '#a855f7', '#06b6d4', '#ec4899', '#84cc16'];
+function colorForUser(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  return USER_COLORS[Math.abs(hash) % USER_COLORS.length];
+}
 
 const LOADING_MESSAGES = [
   'Sharpening pencils…',
@@ -65,6 +74,7 @@ const Icons = {
   send:    <Icon d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />,
   copy:    <Icon d="M8 4H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-2M8 4a2 2 0 012-2h4a2 2 0 012 2M8 4h8" />,
   check:   <Icon d="M20 6L9 17l-5-5" />,
+  chevron: <Icon d="M6 9l6 6 6-6" size={14} />,
 };
 
 const TOOLS: { id: Tool; icon: React.ReactNode; label: string; key: string }[] = [
@@ -223,6 +233,10 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   // ── Remote live previews ───────────────────────────────────────────────────
   const [remotePreviews, setRemotePreviews] = useState<Record<string, DrawEl>>({});
 
+  // ── Remote live cursors ─────────────────────────────────────────────────────
+  const [remoteCursors, setRemoteCursors] = useState<Record<string, { x: number; y: number }>>({});
+  const lastCursorSent = useRef(0);
+
   // ── Stage size ─────────────────────────────────────────────────────────────
   const containerRef = useRef<HTMLDivElement>(null);
   const [stageW, setStageW] = useState(800);
@@ -240,7 +254,9 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   ]);
   const [chatInput, setChatInput] = useState('');
   const [chatOpen, setChatOpen]   = useState(false);
+  const [usersListOpen, setUsersListOpen] = useState(false);
   const messagesEnd = useRef<HTMLDivElement>(null);
+  const usersPopoverRef = useRef<HTMLDivElement>(null);
 
   // ── Online users ───────────────────────────────────────────────────────────
   const [onlineUsers, setOnlineUsers] = useState<WSUser[]>([]);
@@ -271,8 +287,8 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     },
     onSync: (els) => { setElements(els); },
     onClear: () => { setElements([]); setRemotePreviews({}); },
-    onChat: ({ text, sender, time }) => {
-      setMessages(prev => [...prev, { id: genId(), text, sender, time, isMe: false }]);
+    onChat: ({ text, sender, senderId, time }) => {
+      setMessages(prev => [...prev, { id: genId(), text, sender, senderId, time, isMe: false }]);
     },
     onUserJoined: (userId, uname, users) => {
       setOnlineUsers(users);
@@ -282,11 +298,15 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
         }]);
       }
     },
-    onUserLeft: (_userId, uname, users) => {
+    onUserLeft: (userId, uname, users) => {
       setOnlineUsers(users);
+      setRemoteCursors(prev => { const n = { ...prev }; delete n[userId]; return n; });
       setMessages(prev => [...prev, {
         id: genId(), text: `${uname} left the room`, sender: 'System', time: nowStr(), isMe: false, system: true,
       }]);
+    },
+    onCursor: (userId, x, y) => {
+      setRemoteCursors(prev => ({ ...prev, [userId]: { x, y } }));
     },
   });
 
@@ -306,6 +326,17 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   }, [joined]);
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  useEffect(() => {
+    if (!usersListOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (usersPopoverRef.current && !usersPopoverRef.current.contains(e.target as Node)) {
+        setUsersListOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [usersListOpen]);
 
   useEffect(() => {
     if (joined) return;
@@ -620,7 +651,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     e.preventDefault();
     if (!chatInput.trim()) return;
     setMessages(prev => [...prev, {
-      id: genId(), text: chatInput.trim(), sender: username, time: nowStr(), isMe: true,
+      id: genId(), text: chatInput.trim(), sender: username, senderId: myUserIdRef.current, time: nowStr(), isMe: true,
     }]);
     send({ type: 'chat', text: chatInput.trim() });
     setChatInput('');
@@ -694,6 +725,11 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
       {/* ── Top bar ── */}
       <header className="flex items-center gap-2 px-3 py-2 border-b border-gray-100 bg-white z-20 shrink-0">
 
+        <span className="hidden md:inline-block text-lg pr-1 select-none" style={{ fontFamily: 'Caveat, cursive', fontWeight: 700 }}>
+          <span className="text-brand">Board</span><span className="text-[#1a1a2e]">Collab</span>
+        </span>
+        <div className="hidden md:block w-px h-5 bg-gray-200 mx-1" />
+
         <button onClick={onLeave}
           className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800 transition-colors px-2 py-1 rounded-lg hover:bg-gray-100">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -702,9 +738,9 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
         </button>
 
         <button onClick={copyCode}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 transition-all"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:border-brand/40 hover:bg-brand-light transition-all"
           title="Copy room code">
-          <span className="font-mono font-semibold tracking-widest text-indigo-600 text-xs">{roomId}</span>
+          <span className="font-mono font-semibold tracking-widest text-brand text-xs">{roomId}</span>
           {copied
             ? <span className="text-green-500">{Icons.check}</span>
             : <span className="text-gray-400">{Icons.copy}</span>}
@@ -714,6 +750,25 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
           <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-amber-400 animate-pulse'}`} />
           <span className="text-xs text-gray-400 hidden sm:block">{connected ? 'Live' : 'Connecting…'}</span>
         </div>
+
+        {/* Live collaborator avatars */}
+        {onlineUsers.length > 0 && (
+          <div className="hidden md:flex items-center -space-x-2 ml-1">
+            {onlineUsers.slice(0, 5).map(u => (
+              <div key={u.id} title={u.id === myUserIdRef.current ? `${u.username} (you)` : u.username}
+                className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-semibold text-white border-2 border-white shadow-sm"
+                style={{ backgroundColor: colorForUser(u.id) }}>
+                {u.username.slice(0, 1).toUpperCase()}
+              </div>
+            ))}
+            {onlineUsers.length > 5 && (
+              <div title={`+${onlineUsers.length - 5} more`}
+                className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold text-gray-600 bg-gray-100 border-2 border-white shadow-sm">
+                +{onlineUsers.length - 5}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex-1" />
 
@@ -733,14 +788,14 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
         <div className="w-px h-5 bg-gray-200 mx-1" />
 
         <button onClick={copyCode}
-          className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors">
+          className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-brand hover:bg-brand-dark text-white rounded-lg text-sm font-medium transition-colors">
           {Icons.share}
           <span>Share</span>
         </button>
 
         <button onClick={() => setChatOpen(o => !o)}
           className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border
-            ${chatOpen ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+            ${chatOpen ? 'bg-brand-light border-brand/30 text-brand' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
           {Icons.chat}
           <span className="hidden sm:inline">Chat</span>
           {onlineUsers.length > 0 && (
@@ -758,7 +813,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
         {TOOLS.map(t => (
           <button key={t.id} onClick={() => { setTool(t.id); clearSelection(); }} title={`${t.label} (${t.key})`}
             className={`p-2 rounded-lg transition-all shrink-0 ${tool === t.id
-              ? 'bg-indigo-100 text-indigo-700 shadow-sm'
+              ? 'bg-brand-light text-brand shadow-sm'
               : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'}`}>
             {t.icon}
           </button>
@@ -777,7 +832,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
             }} />
         ))}
         <label title="Custom color"
-          className="shrink-0 w-6 h-6 rounded-full border-2 border-dashed border-gray-300 hover:border-indigo-400 cursor-pointer flex items-center justify-center relative overflow-hidden">
+          className="shrink-0 w-6 h-6 rounded-full border-2 border-dashed border-gray-300 hover:border-brand cursor-pointer flex items-center justify-center relative overflow-hidden">
           <input type="color" value={color} onChange={e => setColor(e.target.value)}
             className="opacity-0 absolute inset-0 w-full h-full cursor-pointer" />
           <span className="text-gray-400 text-xs pointer-events-none">+</span>
@@ -788,7 +843,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
             <div className="w-px h-6 bg-gray-200 mx-1.5 shrink-0" />
             <button onClick={() => setFill(fill === 'transparent' ? color : 'transparent')}
               title="Toggle fill"
-              className="shrink-0 w-6 h-6 rounded border-2 border-gray-300 hover:border-indigo-400 transition-colors flex items-center justify-center"
+              className="shrink-0 w-6 h-6 rounded border-2 border-gray-300 hover:border-brand transition-colors flex items-center justify-center"
               style={{ backgroundColor: fill === 'transparent' ? 'white' : fill }}>
               {fill === 'transparent' && <span className="text-gray-300 text-[10px] leading-none">∅</span>}
             </button>
@@ -805,7 +860,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
               return (
                 <button key={s} onClick={() => setEraserSize(s)} title={`Eraser ${s}px`}
                   className={`shrink-0 flex items-center justify-center rounded-lg transition-all px-2 h-8 ${
-                    eraserSize === s ? 'bg-indigo-100 text-indigo-700' : 'text-gray-400 hover:bg-gray-100'}`}>
+                    eraserSize === s ? 'bg-brand-light text-brand' : 'text-gray-400 hover:bg-gray-100'}`}>
                   <div className="rounded-full border-2 border-current flex-shrink-0"
                     style={{ width: Math.min(dim, 26), height: Math.min(dim, 26) }} />
                 </button>
@@ -816,7 +871,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
           STROKE_WIDTHS.map(w => (
             <button key={w} onClick={() => setSw(w)} title={`Stroke ${w}px`}
               className={`shrink-0 flex items-center justify-center w-8 h-7 rounded-lg transition-all ${
-                sw === w ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'}`}>
+                sw === w ? 'bg-brand-light text-brand' : 'text-gray-500 hover:bg-gray-100'}`}>
               <div className="bg-current rounded-full" style={{ width: Math.min(w * 3.5, 22), height: w }} />
             </button>
           ))
@@ -842,7 +897,13 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
           }}
           onMouseMove={e => {
             const r = e.currentTarget.getBoundingClientRect();
-            setMousePos({ x: e.clientX - r.left, y: e.clientY - r.top });
+            const x = e.clientX - r.left, y = e.clientY - r.top;
+            setMousePos({ x, y });
+            const now = Date.now();
+            if (now - lastCursorSent.current > 40) {
+              lastCursorSent.current = now;
+              send({ type: 'cursor', x, y });
+            }
           }}
           onMouseLeave={() => setMousePos(null)}
         >
@@ -897,6 +958,32 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
               </Layer>
             )}
           </Stage>
+
+          {/* Live collaborator cursors */}
+          <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
+            {Object.entries(remoteCursors).map(([uid, pos]) => {
+              const user = onlineUsers.find(u => u.id === uid);
+              if (!user) return null;
+              const uColor = colorForUser(uid);
+              return (
+                <div
+                  key={uid}
+                  className="absolute top-0 left-0 transition-transform duration-75 ease-out"
+                  style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
+                >
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill={uColor} stroke="white" strokeWidth="1">
+                    <path d="M4 2l13 7-6 1.6L9 17z" strokeLinejoin="round" />
+                  </svg>
+                  <span
+                    className="absolute left-4 top-4 whitespace-nowrap text-[11px] font-semibold text-white px-2 py-0.5 rounded-full shadow-sm"
+                    style={{ backgroundColor: uColor, fontFamily: 'Inter, sans-serif' }}
+                  >
+                    {user.username}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
 
           {/* Text input overlay */}
           {textPos && (
@@ -974,9 +1061,54 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-gray-800"
                   style={{ fontFamily: 'Caveat, cursive', fontSize: '1.2rem' }}>Chat</span>
-                <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-medium">
-                  {onlineUsers.length} online
-                </span>
+
+                {onlineUsers.length > 0 && (
+                  <div className="relative" ref={usersPopoverRef}>
+                    <button
+                      onClick={() => setUsersListOpen(o => !o)}
+                      title={usersListOpen ? "Hide who's online" : "Show who's online"}
+                      className={`flex items-center -space-x-1.5 pl-0.5 pr-1 py-0.5 rounded-full transition-colors ${
+                        usersListOpen ? 'bg-gray-100' : 'hover:bg-gray-100'}`}>
+                      {onlineUsers.slice(0, 3).map(u => (
+                        <span key={u.id}
+                          className="w-5 h-5 rounded-full border-2 border-white flex items-center justify-center text-[9px] font-bold text-white shadow-sm"
+                          style={{ backgroundColor: colorForUser(u.id) }}>
+                          {u.username.slice(0, 1).toUpperCase()}
+                        </span>
+                      ))}
+                      {onlineUsers.length > 3 && (
+                        <span className="w-5 h-5 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-[8px] font-bold text-gray-600">
+                          +{onlineUsers.length - 3}
+                        </span>
+                      )}
+                      <span className={`!ml-1 text-gray-400 transition-transform ${usersListOpen ? 'rotate-180' : ''}`}>
+                        {Icons.chevron}
+                      </span>
+                    </button>
+
+                    {usersListOpen && (
+                      <div className="popover-in absolute left-0 top-full mt-2 w-52 max-h-64 overflow-y-auto bg-white rounded-xl border border-gray-100 shadow-lg py-1.5 z-40">
+                        <p className="px-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                          {onlineUsers.length} online
+                        </p>
+                        {onlineUsers.map(u => (
+                          <div key={u.id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50">
+                            <span className="relative shrink-0">
+                              <span className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white"
+                                style={{ backgroundColor: colorForUser(u.id) }}>
+                                {u.username.slice(0, 1).toUpperCase()}
+                              </span>
+                              <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-green-400 border border-white" />
+                            </span>
+                            <span className="text-sm text-gray-700 truncate" style={{ fontFamily: 'Inter, sans-serif' }}>
+                              {u.id === myUserIdRef.current ? `${u.username} (you)` : u.username}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <button onClick={() => setChatOpen(false)}
                 className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
@@ -984,42 +1116,40 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
               </button>
             </div>
 
-            {onlineUsers.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 px-4 py-2 border-b border-gray-50">
-                {onlineUsers.map(u => (
-                  <span key={u.id}
-                    className={`text-sm px-2.5 py-0.5 rounded-full font-medium ${
-                      u.id === myUserIdRef.current ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-700'
-                    }`}
-                    style={{ fontFamily: 'Inter, sans-serif' }}>
-                    {u.id === myUserIdRef.current ? `${u.username} (you)` : u.username}
-                  </span>
-                ))}
-              </div>
-            )}
-
             <div className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3">
-              {messages.map(msg => (
-                <div key={msg.id} className={`flex flex-col ${msg.isMe ? 'items-end' : 'items-start'}`}>
-                  {!msg.isMe && !msg.system && (
-                    <span className="text-xs font-semibold text-gray-600 mb-1 px-1">
-                      {msg.sender}
+              {messages.map(msg => {
+                if (msg.system) {
+                  return (
+                    <div key={msg.id} className="msg-in text-center">
+                      <span className="text-xs text-gray-400 italic">{msg.text}</span>
+                    </div>
+                  );
+                }
+                const uColor = colorForUser(msg.senderId ?? msg.sender);
+                return (
+                  <div key={msg.id} className={`msg-in flex items-end gap-2 ${msg.isMe ? 'flex-row-reverse' : ''}`}>
+                    <span
+                      title={msg.sender}
+                      className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0 shadow-sm"
+                      style={{ backgroundColor: uColor }}>
+                      {msg.sender.slice(0, 1).toUpperCase()}
                     </span>
-                  )}
-                  <div className={`max-w-[85%] px-3 py-2 rounded-2xl text-sm leading-relaxed ${
-                    msg.system
-                      ? 'bg-transparent text-gray-400 italic text-xs text-center w-full px-0'
-                      : msg.isMe
-                        ? 'bg-indigo-600 text-white rounded-br-sm'
-                        : 'bg-gray-100 text-gray-800 rounded-bl-sm'
-                  }`}>
-                    {msg.text}
+                    <div className={`flex flex-col max-w-[75%] ${msg.isMe ? 'items-end' : 'items-start'}`}>
+                      {!msg.isMe && (
+                        <span className="text-xs font-semibold mb-1 px-1" style={{ color: uColor }}>
+                          {msg.sender}
+                        </span>
+                      )}
+                      <div className={`px-3 py-2 rounded-2xl text-sm leading-relaxed ${
+                        msg.isMe ? 'bg-brand text-white rounded-br-sm' : 'bg-gray-100 text-gray-800 rounded-bl-sm'
+                      }`}>
+                        {msg.text}
+                      </div>
+                      <span className="text-xs text-gray-300 mt-1 px-1">{msg.time}</span>
+                    </div>
                   </div>
-                  {!msg.system && (
-                    <span className="text-xs text-gray-300 mt-1 px-1">{msg.time}</span>
-                  )}
-                </div>
-              ))}
+                );
+              })}
               <div ref={messagesEnd} />
             </div>
 
@@ -1030,10 +1160,10 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
                 value={chatInput}
                 onChange={e => setChatInput(e.target.value)}
                 placeholder="Send a message…"
-                className="flex-1 px-3 py-2 text-sm rounded-xl border border-gray-200 outline-none focus:border-indigo-400 transition-colors bg-gray-50"
+                className="flex-1 px-3 py-2 text-sm rounded-xl border border-gray-200 outline-none focus:border-brand transition-colors bg-gray-50"
               />
               <button type="submit" disabled={!chatInput.trim()}
-                className="p-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-xl transition-colors shrink-0">
+                className="p-2.5 bg-brand hover:bg-brand-dark disabled:opacity-40 text-white rounded-xl transition-colors shrink-0">
                 {Icons.send}
               </button>
             </form>
