@@ -121,6 +121,11 @@ function elIntersectsBox(el: DrawEl, box: SelBox) {
   return b.x1 <= box.x+box.w && b.x2 >= box.x && b.y1 <= box.y+box.h && b.y2 >= box.y;
 }
 
+function touchMidpoint(touches: TouchList): { x: number; y: number } {
+  const t0 = touches[0], t1 = touches[1];
+  return { x: (t0.clientX + t1.clientX) / 2, y: (t0.clientY + t1.clientY) / 2 };
+}
+
 function applyOffset(el: DrawEl, dx: number, dy: number): DrawEl {
   const off = (pts: number[]) => pts.map((v, i) => i % 2 === 0 ? v + dx : v + dy);
   switch (el.type) {
@@ -236,6 +241,10 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   // ── Remote live cursors ─────────────────────────────────────────────────────
   const [remoteCursors, setRemoteCursors] = useState<Record<string, { x: number; y: number }>>({});
   const lastCursorSent = useRef(0);
+
+  // ── Two-finger canvas panning (mobile) ──────────────────────────────────────
+  const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
+  const panMidpoint = useRef<{ x: number; y: number } | null>(null);
 
   // ── Stage size ─────────────────────────────────────────────────────────────
   const containerRef = useRef<HTMLDivElement>(null);
@@ -428,13 +437,17 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
   // ─── Drawing handlers ──────────────────────────────────────────────────────
 
-  // Clamp pointer position to stage bounds so drawing never escapes the canvas
+  // Clamp pointer position to the visible viewport, then translate into
+  // canvas/world coordinates (undoing the two-finger pan offset) so shapes
+  // land where they're drawn regardless of how far the canvas has been panned.
   const getPos = () => {
     const p = stageRef.current?.getPointerPosition();
     if (!p) return null;
+    const screenX = Math.max(0, Math.min(p.x, stageW - 1));
+    const screenY = Math.max(0, Math.min(p.y, stageH - 1));
     return {
-      x: Math.max(0, Math.min(p.x, stageW - 1)),
-      y: Math.max(0, Math.min(p.y, stageH - 1)),
+      x: screenX - stagePos.x,
+      y: screenY - stagePos.y,
     };
   };
 
@@ -446,6 +459,29 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
   }, []);
 
   const handleDown = (e: any) => {
+    const touches = e.evt?.touches as TouchList | undefined;
+    if (touches && touches.length >= 2) {
+      // A second finger joined — abort whatever single-touch action was
+      // starting and switch entirely to two-finger panning.
+      if (currentEl.current) {
+        const abortedId = currentEl.current.id;
+        setElements(prev => prev.filter(el => el.id !== abortedId));
+      }
+      isDrawing.current = false;
+      currentEl.current = null;
+      // Only abort an in-progress selection drag — a finalized selection
+      // box should stay put (it pans along with the canvas content).
+      if (isSelecting.current) {
+        isSelecting.current = false;
+        selBoxRef.current = null;
+        selBoxStart.current = null;
+        setSelBox(null);
+      }
+      isMovingSelection.current = false;
+      panMidpoint.current = touchMidpoint(touches);
+      return;
+    }
+
     if (tool === 'select') {
       const pos = getPos();
       if (!pos) return;
@@ -510,7 +546,19 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     setElements(prev => [...prev, el]);
   };
 
-  const handleMove = () => {
+  const handleMove = (e?: any) => {
+    const touches = e?.evt?.touches as TouchList | undefined;
+    if (touches && touches.length >= 2) {
+      const mid = touchMidpoint(touches);
+      if (panMidpoint.current) {
+        const dx = mid.x - panMidpoint.current.x;
+        const dy = mid.y - panMidpoint.current.y;
+        if (dx !== 0 || dy !== 0) setStagePos(p => ({ x: p.x + dx, y: p.y + dy }));
+      }
+      panMidpoint.current = mid;
+      return;
+    }
+
     // Move finalized selection
     if (isMovingSelection.current && selMovePrevPos.current) {
       const pos = getPos();
@@ -567,7 +615,15 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
     }
   };
 
-  const handleUp = () => {
+  const handleUp = (e?: any) => {
+    const touches = e?.evt?.touches as TouchList | undefined;
+    if (touches && touches.length >= 2) {
+      // Still two or more fingers down — stay in pan mode
+      panMidpoint.current = touchMidpoint(touches);
+      return;
+    }
+    panMidpoint.current = null;
+
     // Commit moved selection
     if (isMovingSelection.current) {
       isMovingSelection.current = false;
@@ -884,7 +940,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
         {/* Canvas */}
         <div
           ref={containerRef}
-          className="flex-1 relative bg-white overflow-hidden"
+          className="flex-1 relative bg-white overflow-hidden touch-none"
           style={{ cursor }}
           onClick={e => {
             if (tool !== 'text') return;
@@ -892,7 +948,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
             if (textareaRef.current && (e.target === textareaRef.current)) return;
             const r = e.currentTarget.getBoundingClientRect();
             textCommittedRef.current = false;
-            setTextPos({ x: e.clientX - r.left, y: e.clientY - r.top });
+            setTextPos({ x: e.clientX - r.left - stagePos.x, y: e.clientY - r.top - stagePos.y });
             setTextVal('');
           }}
           onMouseMove={e => {
@@ -910,6 +966,7 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
           <Stage
             ref={stageRef}
             width={stageW} height={stageH}
+            x={stagePos.x} y={stagePos.y}
             onMouseDown={handleDown} onMousemove={handleMove} onMouseup={handleUp}
             onTouchStart={handleDown} onTouchMove={handleMove} onTouchEnd={handleUp}
           >
@@ -1001,8 +1058,8 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
               placeholder="Type here…"
               style={{
                 position: 'absolute',
-                left: textPos.x,
-                top: textPos.y,
+                left: textPos.x + stagePos.x,
+                top: textPos.y + stagePos.y,
                 fontFamily: 'Caveat, cursive',
                 fontSize: 20,
                 color,
@@ -1028,6 +1085,22 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
                 Pick a tool &amp; start drawing!
               </p>
             </div>
+          )}
+
+          {/* Recenter — appears once the canvas has been panned away from origin */}
+          {(stagePos.x !== 0 || stagePos.y !== 0) && (
+            <button
+              onClick={() => setStagePos({ x: 0, y: 0 })}
+              title="Recenter canvas"
+              className="absolute bottom-4 right-4 z-20 flex items-center gap-1.5 px-3 py-2 rounded-full bg-white border border-gray-200 shadow-md text-xs font-medium text-gray-600 hover:text-brand hover:border-brand/40 transition-colors"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+              </svg>
+              <span className="hidden sm:inline">Recenter</span>
+            </button>
           )}
 
           {/* Eraser cursor indicator */}
