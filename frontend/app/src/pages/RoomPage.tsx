@@ -844,12 +844,6 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
         <div className="w-px h-5 bg-gray-200 mx-1" />
 
-        {/* <button onClick={copyCode}
-          className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-brand hover:bg-brand-dark text-white rounded-lg text-sm font-medium transition-colors">
-          {Icons.share}
-          <span>Share</span>
-        </button> */}
-
         <button onClick={() => setChatOpen(o => !o)}
           className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border
             ${chatOpen ? 'bg-brand-light border-brand/30 text-brand' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
