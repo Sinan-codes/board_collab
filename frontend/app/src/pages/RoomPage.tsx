@@ -796,7 +796,8 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
         <button onClick={copyCode}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:border-brand/40 hover:bg-brand-light transition-all"
           title="Copy room code">
-          <span className="font-mono font-semibold tracking-widest text-brand text-xs">{roomId}</span>
+          <span className="text-[10px] leading-none font-medium text-gray-400 uppercase tracking-wide hidden sm:inline">Code</span>
+          <span className="font-mono leading-none font-semibold tracking-widest text-brand text-xs">{roomId}</span>
           {copied
             ? <span className="text-green-500">{Icons.check}</span>
             : <span className="text-gray-400">{Icons.copy}</span>}
@@ -843,11 +844,11 @@ export default function RoomPage({ roomId, username, onLeave }: RoomPageProps) {
 
         <div className="w-px h-5 bg-gray-200 mx-1" />
 
-        <button onClick={copyCode}
+        {/* <button onClick={copyCode}
           className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-brand hover:bg-brand-dark text-white rounded-lg text-sm font-medium transition-colors">
           {Icons.share}
           <span>Share</span>
-        </button>
+        </button> */}
 
         <button onClick={() => setChatOpen(o => !o)}
           className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border
