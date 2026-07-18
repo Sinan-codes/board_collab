@@ -44,11 +44,11 @@ It's a full-stack project built to demonstrate real-time systems design: WebSock
 ## Architecture
 
 ```
- Browser A                        FastAPI app
+  Browser A                               FastAPI app
 ┌───────────┐   WebSocket JSON   ┌───────────────────────────┐
-│react-konva│◀ ─ ─ ─ ─ ─ ─ ─ ─ ─▶│  /ws/{room_id}            │
-└───────────┘  draw / cursor /  │        │                  │
- Browser B      chat / sync      │        ▼                  │
+│react-konva│◀ ─ ─ ─ ─ ─ ─ ─ ─ ─▶│      /ws/{room_id}        │
+└───────────┘  draw / cursor /   │           │               │
+ Browser B      chat / sync      │           ▼               │
 ┌───────────┐                    │  Room registry (in-memory)│
 │react-konva│◀ ─ ─ ─ ─ ─ ─ ─ ─ ─▶│  strokes fan out to peers │
 └───────────┘                    └───────────────────────────┘
